@@ -54,7 +54,7 @@ git clone <저장소 URL> ~/no-last-train && cd ~/no-last-train
 curl -s http://127.0.0.1:8080/api/health   # {"status":"ok","db":"connected"}
 ```
 
-### 2. Cloudflare 인증 — **도메인 소유자가 수행**
+### 2-a. Cloudflare 인증 — 계정 소유자가 서버에서 직접 수행할 때
 
 ```bash
 cloudflared tunnel login
@@ -72,7 +72,37 @@ echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudf
 sudo apt-get update && sudo apt-get install -y cloudflared
 ```
 
-### 3. 터널 연결
+### 2-b. 계정 소유자가 서버에 접근할 수 없을 때 (대시보드 + 토큰)
+
+도메인·계정을 가진 사람과 서버를 만지는 사람이 다르면, 위의 `cloudflared tunnel login`
+대신 대시보드에서 터널을 만들고 **토큰만** 건네받는다. 서버 주소나 SSH 접근을 넘길
+필요가 없다.
+
+**계정 소유자가 할 일** (Cloudflare 대시보드)
+
+1. **Zero Trust → Networks → Tunnels → Create a tunnel** → **Cloudflared** 선택 →
+   이름 `nlt`
+2. 다음 화면의 설치 명령에 들어 있는 **토큰**(`eyJ…` 로 시작하는 긴 문자열)을
+   서버 담당자에게 전달한다. 비밀값이므로 안전한 경로로 보내고, 유출되면
+   대시보드에서 터널을 삭제·재생성하면 무효화된다.
+3. **Public Hostname** 탭 → **Add a public hostname**
+   - Subdomain: 비움(루트로 쓸 때) 또는 `game`
+   - Domain: `nolasttrain.live`
+   - Type: **HTTP**, URL: **`localhost:8080`**
+4. 저장. DNS CNAME 은 Cloudflare 가 자동으로 만든다.
+
+주의: 이 호스트명에 **Access(인증) 정책을 걸지 않는다**. 걸면 게임 접속 전에
+Cloudflare 로그인을 요구한다. WebSocket(`/ws`)은 기본으로 통과하므로 따로 켤 것은 없다.
+
+**서버 담당자가 할 일** — 받은 토큰으로 한 줄이면 끝이다. 설정(ingress·DNS)은
+대시보드에 있으므로 `cloudflare-tunnel.sh` 도, `cert.pem` 도 필요 없다.
+
+```bash
+sudo cloudflared service install <토큰>
+systemctl status cloudflared
+```
+
+### 3. 터널 연결 (2-a 로 인증했을 때)
 
 ```bash
 ./deploy/cloudflare-tunnel.sh nolasttrain.live --port 8080
