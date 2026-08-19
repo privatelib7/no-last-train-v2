@@ -122,6 +122,13 @@ npm run dev:logs
 ./deploy/publish.sh
 ```
 
+빈 서버에 처음 올리는 절차는 [`deploy/README.md`](deploy/README.md)에 정리했다.
+`bootstrap.sh`(패키지·DB·nginx) → `publish.sh`(빌드·배포)까지는 공통이고,
+공개 방법만 환경에 따라 갈린다.
+
+- 80/443을 열 수 있는 서버(Oracle Cloud 프리티어 등) → `setup-https.sh` (Let's Encrypt)
+- 인바운드를 열 수 없는 머신(외부 IP 없음 등) → `cloudflare-tunnel.sh` (Cloudflare Tunnel)
+
 ## 스크립트
 
 | 명령 | 설명 |

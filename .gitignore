@@ -22,8 +22,18 @@ dist-ssr
 .env.*
 !.env.example
 
-# Server-local deploy scripts, nginx configs, TLS certs (never commit)
-deploy/
+# 배포 디렉터리: 아래 허용 목록의 파일만 커밋한다.
+# 생성물(.env.deploy, TLS 인증서, 서버별 오버라이드)은 절대 커밋하지 않는다.
+deploy/*
+!deploy/README.md
+!deploy/bootstrap.sh
+!deploy/oci-create-instance.sh
+!deploy/publish.sh
+!deploy/setup-https.sh
+!deploy/cloudflare-tunnel.sh
+!deploy/ecosystem.config.cjs
+!deploy/nginx-nlt.conf.template
+!deploy/nginx-nlt-app.inc
 
 # Editor directories and files
 .vscode/*

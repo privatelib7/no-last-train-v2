@@ -1,0 +1,16 @@
+# deploy/bootstrap.sh 가 __SERVER_NAME__ / __WEB_ROOT__ / __HTTP_PORT__ 를 치환해
+# /etc/nginx/sites-available/nlt 로 설치한다.
+# HTTPS(443) 블록은 deploy/setup-https.sh 의 certbot 이 여기에 덧붙인다.
+server {
+    listen __HTTP_PORT__ default_server;
+    listen [::]:__HTTP_PORT__ default_server;
+    server_name __SERVER_NAME__;
+
+    root __WEB_ROOT__;
+    index index.html;
+
+    access_log /var/log/nginx/nlt-access.log;
+    error_log  /var/log/nginx/nlt-error.log;
+
+    include /etc/nginx/snippets/nlt-app.inc;
+}
