@@ -22,7 +22,8 @@ OS_NAME="Canonical Ubuntu"
 OS_VERSION="24.04"
 SSH_KEY="$HOME/.ssh/nlt_oracle"
 COMPARTMENT=""
-RETRY_INTERVAL=90
+RETRY_INTERVAL=300       # 용량 부족 재시도 간격(초). 너무 짧으면 Oracle 이 429 로 막는다
+THROTTLE_WAIT=900        # 429(TooManyRequests) 를 만났을 때 쉬는 시간(초)
 MAX_ATTEMPTS=40          # 0 이면 무제한
 VCN_NAME="nlt-vcn"
 SUBNET_NAME="nlt-subnet"
@@ -44,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --ssh-key)         SSH_KEY="$2"; shift 2 ;;
     --compartment)     COMPARTMENT="$2"; shift 2 ;;
     --retry-interval)  RETRY_INTERVAL="$2"; shift 2 ;;
+    --throttle-wait)   THROTTLE_WAIT="$2"; shift 2 ;;
     --max-attempts)    MAX_ATTEMPTS="$2"; shift 2 ;;
     -h|--help)         sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "알 수 없는 인자: $1" ;;
@@ -52,6 +54,9 @@ done
 
 command -v "$OCI" >/dev/null || die "oci CLI 가 없다. OCI_BIN 으로 경로를 주거나 설치한다."
 command -v jq >/dev/null || die "jq 가 필요하다: sudo apt-get install -y jq"
+
+# 개인 키 라벨 경고 억제 (동작에는 영향 없음)
+export SUPPRESS_LABEL_WARNING=True
 
 CONFIG_FILE="${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}"
 [[ -f "$CONFIG_FILE" ]] || die "$CONFIG_FILE 가 없다. 콘솔에서 API 키를 만들고 설정한다."
@@ -65,9 +70,11 @@ q() { "$OCI" "$@" 2>/dev/null || true; }
 none() { [[ -z "$1" || "$1" == "null" ]]; }
 
 log "계정 확인"
-region="$("$OCI" iam region-subscription list --query 'data[0]."region-name"' --raw-output 2>/dev/null || true)"
-none "$region" && die "OCI 인증에 실패했다. ~/.oci/config 의 키·핑거프린트를 확인한다."
-info "리전     : $region"
+# region-subscription 조회는 테넌시 권한이 없으면 막히므로, 인증 확인은 AD 조회로 한다.
+region="$(awk -F'=' '/^[[:space:]]*region[[:space:]]*=/{gsub(/[[:space:]]/,"",$2); print $2; exit}' "$CONFIG_FILE")"
+probe="$(q iam availability-domain list --compartment-id "$COMPARTMENT" --query 'data[0].name' --raw-output)"
+none "$probe" && die "OCI 인증에 실패했다. ~/.oci/config 의 user·tenancy·fingerprint·key_file 을 확인한다."
+info "리전     : ${region:-?}"
 info "compartment: ${COMPARTMENT:0:24}…"
 
 # ── SSH 키 ─────────────────────────────────────────────────────────────────
@@ -176,6 +183,11 @@ while :; do
   err="$(cat "$err_file")"; rm -f "$err_file"
   if grep -qiE 'out of (host )?capacity|capacity.*not available' <<<"$err"; then
     printf '용량 없음\n'
+  elif grep -qiE 'toomanyrequests|too many requests|"status": *429' <<<"$err"; then
+    # Oracle 이 생성 요청 빈도를 제한한 것이다. 재시도 자체는 유효하니 길게 쉬고 계속한다.
+    printf '요청 제한(429) — %s초 대기\n' "$THROTTLE_WAIT"
+    sleep "$THROTTLE_WAIT"
+    continue
   elif grep -qiE 'limitexceeded|exceeded.*limit' <<<"$err"; then
     printf '\n'
     warn "무료 한도를 넘었다는 응답이다. 이미 만든 인스턴스가 있는지 확인한다."

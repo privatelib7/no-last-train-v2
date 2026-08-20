@@ -351,7 +351,8 @@ gunzip -c ~/nlt-2026-08-19.sql.gz | sudo docker exec -i nlt-postgres psql -U nlt
 | 터널은 붙었는데 502 | `curl http://127.0.0.1:8080/` 로 nginx 부터 확인, 그다음 `pm2 status` |
 | `cloudflared tunnel login` 이 만료됨 | 대기 시간이 지나면 종료된다. 브라우저 앞에 있을 때 다시 실행한다 |
 | `route dns` 가 실패 | 그 도메인이 Cloudflare zone 이 아니거나, 같은 이름의 레코드가 이미 있다 |
-| A1 생성이 계속 실패 | AD 변경 · OCPU 축소 · 시간대를 바꿔 재시도 |
+| A1 생성이 계속 실패 | 용량은 수시로 바뀐다. 간격을 늘려(`--retry-interval 300` 이상) 길게 돌리거나, OCPU 를 줄이거나(`--ocpus 1 --memory 6`), `VM.Standard.E2.1.Micro` 로 시작한다 |
+| `TooManyRequests`(429) | 생성 요청이 잦았다. 스크립트가 `--throttle-wait` 만큼 쉬고 이어간다 |
 
 ## 부록: OCI CLI 로 인스턴스 만들기
 
@@ -409,7 +410,8 @@ oci iam region-subscription list
 | `--shape` | `VM.Standard.A1.Flex` | x86 로 갈 땐 `VM.Standard.E2.1.Micro` |
 | `--boot-size` | 50 | 부트 볼륨 GB |
 | `--ssh-key` | `~/.ssh/nlt_oracle` | 없으면 ed25519 키를 새로 만든다 |
-| `--retry-interval` | 90 | 용량 부족 시 재시도 간격(초) |
+| `--retry-interval` | 300 | 용량 부족 시 재시도 간격(초). 짧으면 Oracle 이 429 로 막는다 |
+| `--throttle-wait` | 900 | 429(TooManyRequests) 를 만났을 때 쉬는 시간(초) |
 | `--max-attempts` | 40 | `0` 이면 무제한 |
 | `--os-version` | 24.04 | Ubuntu 버전 |
 
