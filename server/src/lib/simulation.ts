@@ -86,11 +86,9 @@ export async function tickRecentlyActiveCities(): Promise<void> {
   await Promise.all(Array.from({ length: workerCount }, () => worker()))
 }
 
-// Cloudflare Workers 배포에서는 요청마다 격리된 isolate가 뜰 수 있어 위 in-memory
-// 큐만으로는 같은 도시에 대한 동시 요청을 막지 못한다(각 isolate가 서로 다른
-// citySimulationQueues 인스턴스를 가짐). 이 경우 같은 틱이 두 번 처리되어 차량이
-// 순간이동하거나 갑자기 빨라지는 것처럼 보이는 원인이 된다. DB 어드바이저리 락으로
-// 프로세스/isolate 경계를 넘어 도시 단위 상호 배제를 보장한다.
+// 같은 도시를 동시에 시뮬레이션하면 틱이 두 번 처리되어 차량이
+// 순간이동하거나 갑자기 빨라지는 것처럼 보일 수 있다. DB 어드바이저리 락으로
+// 프로세스 경계를 넘어 도시 단위 상호 배제를 보장한다.
 async function withCityLock<T>(cityId: string, task: () => Promise<T>): Promise<T> {
   return db.$transaction(
     async tx => {
