@@ -6,6 +6,9 @@
 #   ./deploy/publish.sh --pull       # git pull 후 배포
 #   ./deploy/publish.sh --seed       # 최초 1회: 초기 데이터(시드) 포함
 #   ./deploy/publish.sh --skip-install
+#   # 램이 적은 서버(빌드가 OOM 나는 경우): 같은 아키텍처의 다른 머신에서 빌드해
+#   # node_modules · server/.next · client/dist 를 전송한 뒤
+#   ./deploy/publish.sh --skip-install --skip-build
 #
 # 주의: --seed 는 시연용 도시 데이터를 다시 만든다(기존 도시 일부를 지운다).
 #       운영 중인 서버에는 쓰지 않는다.
@@ -17,6 +20,7 @@ WEB_ROOT="${WEB_ROOT:-/var/www/nlt}"
 DO_PULL=0
 DO_SEED=0
 SKIP_INSTALL=0
+SKIP_BUILD=0
 
 log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
@@ -26,6 +30,7 @@ while [[ $# -gt 0 ]]; do
     --pull)         DO_PULL=1; shift ;;
     --seed)         DO_SEED=1; shift ;;
     --skip-install) SKIP_INSTALL=1; shift ;;
+    --skip-build)   SKIP_BUILD=1; shift ;;
     --web-root)     WEB_ROOT="$2"; shift 2 ;;
     -h|--help)      sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "알 수 없는 인자: $1" ;;
@@ -61,11 +66,16 @@ if [[ $DO_SEED -eq 1 ]]; then
   ( cd server && npx tsx prisma/seed.ts )
 fi
 
-log "API 서버 빌드 (next build)"
-npm run build:next -w no-last-train-server
+if [[ $SKIP_BUILD -eq 0 ]]; then
+  log "API 서버 빌드 (next build)"
+  npm run build:next -w no-last-train-server
 
-log "프론트 빌드 (vite build)"
-npm run build:client
+  log "프론트 빌드 (vite build)"
+  npm run build:client
+else
+  log "빌드 건너뜀 (--skip-build) — 전송된 산출물을 그대로 쓴다"
+  [[ -d server/.next ]] || die "server/.next 가 없다. 빌드 산출물을 먼저 전송한다."
+fi
 
 log "정적 파일 동기화 → $WEB_ROOT"
 [[ -d client/dist ]] || die "client/dist 가 없다. 프론트 빌드가 실패했다."

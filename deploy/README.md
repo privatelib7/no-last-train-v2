@@ -309,6 +309,31 @@ DuckDNS 서브도메인을 만들어 `./deploy/bootstrap.sh --domain <이름>.du
 
 ---
 
+## 램이 적은 서버 (E2.1.Micro 등 1 GB)
+
+`bootstrap.sh` 가 메모리 4 GB 미만이면 스왑 2 GB 를 자동으로 만든다. 그래도 빌드가
+OOM 으로 죽으면, **같은 아키텍처·같은 Node 메이저 버전**의 다른 머신에서 빌드해
+산출물만 보내고 인스턴스에서는 실행만 시킨다.
+
+```bash
+# 빌드 머신에서
+npm ci
+npm run build:next -w no-last-train-server
+npm run build:client
+
+# 산출물 전송 (x86_64 → x86_64, ARM → ARM 이어야 한다. prisma·swc 바이너리가 아키텍처별이다)
+rsync -az --delete node_modules/    ubuntu@<IP>:~/no-last-train/node_modules/
+rsync -az --delete server/.next/    ubuntu@<IP>:~/no-last-train/server/.next/
+rsync -az --delete client/dist/     ubuntu@<IP>:~/no-last-train/client/dist/
+
+# 인스턴스에서 — 설치·빌드를 건너뛰고 배포만
+./deploy/publish.sh --skip-install --skip-build --seed
+```
+
+실행 자체도 빠듯하다. 측정 기준 `nlt-server` 약 260 MB, `nlt-realtime` 약 145 MB,
+PostgreSQL 약 80 MB 라 1 GB 에서는 스왑에 기대게 된다. 여유가 필요하면 Redis 를
+빼도 된다(없으면 PostgreSQL 직접 조회로 폴백한다).
+
 ## 운영
 
 ```bash
@@ -414,6 +439,11 @@ oci iam region-subscription list
 | `--throttle-wait` | 900 | 429(TooManyRequests) 를 만났을 때 쉬는 시간(초) |
 | `--max-attempts` | 40 | `0` 이면 무제한 |
 | `--os-version` | 24.04 | Ubuntu 버전 |
+
+A1 은 리전에 따라 몇 시간~며칠씩 용량이 없을 수 있다. 도쿄에서 2 OCPU/12 GB 와
+1 OCPU/6 GB 모두 연속 실패한 사례가 있고, 이때 `--shape VM.Standard.E2.1.Micro` 는
+첫 시도에 잡혔다. 급하면 Micro 로 시작하고(위 "램이 적은 서버" 절 참고), A1 은
+따로 루프를 돌려두는 편이 낫다.
 
 스크립트가 하는 일: SSH 키 준비 → VCN(10.0.0.0/16) · 인터넷 게이트웨이 · 기본 라우팅 →
 보안 목록에 22/80/443 수신 규칙 → 퍼블릭 서브넷 → 최신 Ubuntu ARM 이미지 조회 →
