@@ -212,6 +212,12 @@ function lineDisplayName(name: string) {
 }
 export default function GamePage({ cityId, session, onBack, onRequireLogin }: Props) {
   const [state, setState] = useState<CityState | null>(null)
+  /**
+   * 라이브 엔진(서버가 100ms 인메모리 틱으로 도시를 굴리는 경우)이 motion 메시지에
+   * 실어 보내는 "화면용" 잔고/매출. city 메시지(2500ms)보다 훨씬 자주 갱신되며,
+   * 값이 실제로 바뀔 때만 갱신해 무거운 state 전체는 그대로 두고 HUD 숫자만 자주 리렌더한다.
+   */
+  const [liveEconomy, setLiveEconomy] = useState<{ cashBalance: number; totalRevenue: number } | null>(null)
   const [selectedLineId, setSelectedLineId] = useState('')
   const [selectedVehicleId, setSelectedVehicleId] = useState('')
   const [stationBuildMode, setStationBuildMode] = useState(false)
@@ -532,6 +538,15 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
         motionPollCountRef.current += 1
         motionClockOffsetRef.current = next.serverNow - Date.now()
         motionRef.current = next
+        if (next.liveCashBalance !== undefined && next.liveTotalRevenue !== undefined) {
+          const cashBalance = next.liveCashBalance
+          const totalRevenue = next.liveTotalRevenue
+          setLiveEconomy(prev => (prev && prev.cashBalance === cashBalance && prev.totalRevenue === totalRevenue)
+            ? prev
+            : { cashBalance, totalRevenue })
+        } else {
+          setLiveEconomy(prev => (prev === null ? prev : null))
+        }
         const fingerprint = [
           next.currentTick,
           ...next.vehicles.map(v =>
@@ -1495,8 +1510,11 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const totalVehicles = state.city.lines.reduce((sum, line) => sum + line.vehicles.length, 0)
   const waitingPassengers = hudSample.waitingPassengers
     || state.stationStats.reduce((sum, stat) => sum + stat.waitingCount, 0)
+  // 라이브 엔진이 있으면 motion 스냅샷의 최신 값을, 없으면 기존 city 스냅샷 값을 그대로 쓴다.
+  const displayCashBalance = liveEconomy?.cashBalance ?? state.city.cashBalance
+  const displayTotalRevenue = liveEconomy?.totalRevenue ?? state.city.totalRevenue
   const goalProgress = state.city.revenueGoal > 0
-    ? Math.min(100, (state.city.totalRevenue / state.city.revenueGoal) * 100)
+    ? Math.min(100, (displayTotalRevenue / state.city.revenueGoal) * 100)
     : 0
   const goalJustReached = state.city.goalsCompleted > 0 && state.city.goalReachedAtTick === currentTick
   const goalDaysRemaining = state.city.goalDeadlineDay - currentGameDay
@@ -1650,7 +1668,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
           <div className={`${styles.goalCard} ${goalJustReached ? styles.goalCardReached : ''}`}>
             <div className={styles.goalCardTop}>
               <span>{state.city.goalLevel}단계 · {state.city.goalDeadlineDay}일차까지</span>
-              <b>{formatMoney(state.city.totalRevenue)} <small>/ {formatMoney(state.city.revenueGoal)}</small></b>
+              <b>{formatMoney(displayTotalRevenue)} <small>/ {formatMoney(state.city.revenueGoal)}</small></b>
             </div>
             <div className={`${styles.goalMeta} ${goalDaysRemaining < 0 ? styles.goalMetaOverdue : ''}`}>
               <span>현재 {currentGameDay}일차</span>
@@ -1667,7 +1685,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                 : `기한 안에 목표를 달성하면 지원금 ${formatMoney(state.economyRules.goalRewardCash)}과 8,000점을 받고 다음 목표가 열립니다.`}</p>
           </div>
           <div className={styles.economyGrid}>
-            <span><small>운영 자금</small><b className={state.city.cashBalance < 0 ? styles.dangerValue : ''}>{formatMoney(state.city.cashBalance)}</b></span>
+            <span><small>운영 자금</small><b className={displayCashBalance < 0 ? styles.dangerValue : ''}>{formatMoney(displayCashBalance)}</b></span>
             <span><small>시민 행복도</small><b className={happinessRisk ? styles.dangerValue : ''}>{Math.round(state.city.happiness)}%</b></span>
           </div>
           <div className={styles.happinessTrack} aria-label={`시민 행복도 ${Math.round(state.city.happiness)}%`}>
@@ -1988,7 +2006,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
             )}
             <div className={styles.hudStats}>
               <span><small>경영 점수</small><b>{state.city.score.toLocaleString('ko-KR')}</b></span>
-              <span><small>운영 자금</small><b className={state.city.cashBalance < 0 ? styles.dangerValue : ''}>{formatMoney(state.city.cashBalance)}</b></span>
+              <span><small>운영 자금</small><b className={displayCashBalance < 0 ? styles.dangerValue : ''}>{formatMoney(displayCashBalance)}</b></span>
               <span><small>행복도</small><b>{Math.round(state.city.happiness)}%</b></span>
               <span><small>대기 승객</small><b>{waitingPassengers}명</b></span>
               <span><small>서비스 · 차량</small><b>{Math.round(serviceScore)} · {totalVehicles}대</b></span>
@@ -2312,7 +2330,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
             </p>
             <div className={styles.gameOverStats}>
               <span><small>최종 점수</small><b>{state.city.score.toLocaleString('ko-KR')}</b></span>
-              <span><small>누적 매출</small><b>{formatMoney(state.city.totalRevenue)}</b></span>
+              <span><small>누적 매출</small><b>{formatMoney(displayTotalRevenue)}</b></span>
               <span><small>최종 행복도</small><b>{Math.round(state.city.happiness)}%</b></span>
             </div>
             <div className={styles.gameOverActions}>

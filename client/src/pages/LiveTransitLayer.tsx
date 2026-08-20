@@ -236,7 +236,6 @@ function LiveTransitLayer({
         modeCruiseSpeed(line.mode, motionPhysics),
         gameMinutesPerWallSecond,
         motionDrive?.catchingUp ?? false,
-        located.isDwelling,
       )
       if (smoothed) {
         return [vehicle.id, { ...located, x: smoothed.x, y: smoothed.y }] as const
@@ -259,11 +258,28 @@ function LiveTransitLayer({
     for (const vehicle of orderedVehicles(line)) {
       if (vehicle.status !== 'OPERATING' || vehicle.isSpare) continue
       const synced = motionVehicleById.get(vehicle.id)
+      const confirmedStationId = synced?.currentStationId ?? vehicle.currentStationId
+
+      // 라이브 엔진이 있는 도시는 서버가 정확한 탑승 인원을 그대로 알려준다 — 대기인원
+      // 변화를 추측할 필요가 없고(이미 stationStats가 탑승 반영 후 값), 도착 시점을
+      // 프레임 비교로 짐작할 필요도 없다.
+      if (synced?.justBoarded !== undefined) {
+        if (synced.justBoarded > 0) {
+          earningsFlashRef.current.set(vehicle.id, {
+            amount: synced.justBoarded * farePerPassenger,
+            startedAt: clockNowMs,
+          })
+        }
+        if (confirmedStationId) lastConfirmedStationRef.current.set(vehicle.id, confirmedStationId)
+        continue
+      }
+
+      // 라이브 엔진이 없는(레거시) 도시 — stationStats가 아직 탑승 전 값을 들고 있는
+      // 타이밍을 이용해 "방금 도착"과 탑승 인원을 추정한다.
       if (synced?.isDwelling && synced.fromStationId) {
         const waiting = waitingByStation.get(synced.fromStationId) ?? 0
         waitingByStation.set(synced.fromStationId, Math.max(0, waiting - vehicle.capacity))
       }
-      const confirmedStationId = synced?.currentStationId ?? vehicle.currentStationId
       const lastConfirmedStationId = lastConfirmedStationRef.current.get(vehicle.id)
       if (confirmedStationId && confirmedStationId !== lastConfirmedStationId) {
         lastConfirmedStationRef.current.set(vehicle.id, confirmedStationId)
