@@ -2,6 +2,7 @@ import { db } from './db'
 import {
   advanceVehicleMotion,
   depotPulloutMinutes,
+  expressStopStationIds,
   getTransitMotionPhysics,
   stationDwellMinutes,
   type TransitMotionPhysics,
@@ -27,6 +28,8 @@ export type CityMotionVehicle = {
   mode: 'SUBWAY' | 'BUS' | string
   status: string
   isSpare: boolean
+  /** 급행 — 역을 2개씩 건너뛰며 정차 */
+  isExpress: boolean
   /** DB 원본 — 클라이언트가 syncTick에 맞춰 추가 보간할 때 사용 */
   currentStationId: string | null
   direction: number
@@ -103,6 +106,7 @@ type CachedVehicle = {
   currentStationId: string | null
   direction: number
   segmentProgressMinutes: number
+  isExpress: boolean
 }
 
 type CachedLine = {
@@ -220,6 +224,7 @@ export async function loadCityMotionBase(cityId: string): Promise<CityMotionBase
         currentStationId: vehicle.currentStationId,
         direction: vehicle.direction,
         segmentProgressMinutes: vehicle.segmentProgressMinutes,
+        isExpress: vehicle.isExpress,
       })),
     })),
   }
@@ -247,6 +252,7 @@ export function renderCityMotionSnapshot(
 
   for (const line of base.lines) {
     const stations = line.stations
+    const expressStops = expressStopStationIds(stations)
     const terminus = (() => {
       if (stations.length === 0) return null
       if (stations.length === 1) return stations[0]
@@ -264,6 +270,7 @@ export function renderCityMotionSnapshot(
         mode: line.mode,
         status: vehicle.status,
         isSpare: vehicle.isSpare,
+        isExpress: vehicle.isExpress,
         currentStationId: vehicle.currentStationId,
         direction: vehicle.direction,
         segmentProgressMinutes: vehicle.segmentProgressMinutes,
@@ -316,7 +323,7 @@ export function renderCityMotionSnapshot(
         currentStationId: vehicle.currentStationId,
         direction: vehicle.direction,
         segmentProgressMinutes: vehicle.segmentProgressMinutes,
-      }, stepMinutes, line.mode)
+      }, stepMinutes, line.mode, vehicle.isExpress ? expressStops : null)
 
       const atDepotTerminus = !!terminus
         && motion.currentStationId === terminus.id

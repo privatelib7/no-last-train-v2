@@ -1450,6 +1450,26 @@
   font-weight: 800;
 }
 
+.expressVehicleButton {
+  width: 100%;
+  min-height: 32px;
+  margin-top: 8px;
+  border: 1px solid rgba(63, 100, 214, 0.4);
+  border-radius: 6px;
+  background: var(--gp-surface);
+  color: #3f5cd6;
+  font-size: 14.5px;
+  font-weight: 800;
+}
+
+.expressVehicleButton:disabled {
+  opacity: 0.4;
+}
+
+.expressVehicleButtonActive {
+  background: rgba(63, 100, 214, 0.14);
+}
+
 .depotHeading {
   margin-top: 14px;
   color: var(--gp-text-depot);
@@ -2318,6 +2338,12 @@
 .selectedTrain .trainBody {
   stroke: var(--gp-train-selected-stroke);
   stroke-width: 1;
+}
+
+/* 급행 차량 표시 — 선택 표시(.selectedTrain)와 동시에 적용돼도 급행 빨간 테두리가 우선한다 */
+.expressTrain .trainBody {
+  stroke: #e0303a;
+  stroke-width: 0.9;
 }
 
 .trainBody {

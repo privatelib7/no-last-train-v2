@@ -25,6 +25,8 @@ export type Vehicle = {
   headwayMinutes: number
   direction: number
   segmentProgressMinutes: number
+  /** 급행 — 역을 2개씩 건너뛰며 정차 */
+  isExpress: boolean
 }
 
 export type Policy = {
@@ -222,6 +224,7 @@ export type CityMotionVehicle = {
   mode: 'SUBWAY' | 'BUS' | string
   status: string
   isSpare: boolean
+  isExpress: boolean
   currentStationId: string | null
   direction: number
   segmentProgressMinutes: number
@@ -310,6 +313,7 @@ export type CityAction =
   | { type: 'SET_LINE_STATUS'; lineId: string; status: 'OPERATING' | 'SUSPENDED' }
   | { type: 'BUY_VEHICLE'; lineId: string; count: number }
   | { type: 'SET_VEHICLE_SERVICE'; lineId: string; vehicleId: string; inService: boolean }
+  | { type: 'SET_VEHICLE_EXPRESS'; lineId: string; vehicleId: string; express: boolean }
   | { type: 'TRANSFER_VEHICLE'; lineId: string; vehicleId: string; targetLineId: string }
   | { type: 'REMOVE_VEHICLE'; lineId: string; vehicleId: string }
 

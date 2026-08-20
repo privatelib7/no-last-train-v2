@@ -1,7 +1,7 @@
 import { db } from './db'
 import { evaluatePolicies } from './policy-engine'
 import { calculateTickEconomy, isManagementGoalDeadlineMissed, resolveManagementGoal } from './economy'
-import { advanceVehicleMotion, stationDwellMinutes } from './vehicle-motion'
+import { advanceVehicleMotion, expressStopStationIds, stationDwellMinutes } from './vehicle-motion'
 import { isVehicleInService } from './vehicle-service'
 import { calcServiceScore } from './service-score'
 import { SIM, TIME_DEMAND_MULTIPLIER, ORIGIN_WEIGHT, DEST_WEIGHT, periodOfHour, isWeekendTick } from '@/types/game'
@@ -502,6 +502,7 @@ async function moveVehiclesAndBoard(
     if (line.status !== 'OPERATING') continue
     const stationOrder = line.lineStations.map(ls => ls.station)
     if (stationOrder.length < 2) continue
+    const expressStops = expressStopStationIds(stationOrder)
 
     const orderedVehicles = line.vehicles.slice().sort((a, b) => a.id.localeCompare(b.id))
     for (const vehicle of orderedVehicles) {
@@ -520,7 +521,7 @@ async function moveVehiclesAndBoard(
         currentStationId: vehicle.currentStationId ?? stationOrder[0].id,
         direction: vehicle.direction,
         segmentProgressMinutes: vehicle.segmentProgressMinutes,
-      }, stepMinutes, line.mode)
+      }, stepMinutes, line.mode, vehicle.isExpress ? expressStops : null)
 
       // 한 경제 틱 안에 도착한 모든 역에서 승하차를 처리한다.
       for (const arrivedStationId of motion.arrivedStationIds) {

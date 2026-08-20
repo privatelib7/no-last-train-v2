@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   advanceVehicleMotion,
+  expressStopStationIds,
   reconcileVehicleForInsertedStation,
   segmentTravelMinutes,
   stationDwellMinutes,
@@ -13,6 +14,67 @@ const stations: MotionStation[] = [
   { id: 'b', posX: 10, posY: 0 },
   { id: 'c', posX: 30, posY: 0 },
 ]
+
+const fiveStations: MotionStation[] = [
+  { id: 'a', posX: 0, posY: 0 },
+  { id: 'b', posX: 10, posY: 0 },
+  { id: 'c', posX: 20, posY: 0 },
+  { id: 'd', posX: 30, posY: 0 },
+  { id: 'e', posX: 40, posY: 0 },
+]
+
+test('급행 정차역은 한 칸씩 건너뛰어 고르되 종점은 항상 포함한다', () => {
+  assert.deepEqual([...expressStopStationIds(fiveStations)], ['a', 'c', 'e'])
+
+  const four = fiveStations.slice(0, 4)
+  // 홀짝이 안 맞아도(a,c 선택 후 마지막 d가 안 걸리면) 종점 d를 추가로 포함한다.
+  assert.deepEqual([...expressStopStationIds(four)], ['a', 'c', 'd'])
+
+  // 역 3개(a,b,c)짜리 노선은 가운데 b를 건너뛰고 종점 a-c만 정차역이다.
+  assert.deepEqual([...expressStopStationIds(stations)], ['a', 'c'])
+})
+
+test('급행도 노선을 따라 역을 하나씩 지나가며 이동한다 — 건너뛰는 역도 순간이동 없이 그 위치를 지난다', () => {
+  const expressStops = expressStopStationIds(fiveStations) // {a, c, e}
+  const abDuration = segmentTravelMinutes(fiveStations[0], fiveStations[1], 'SUBWAY') // a-b
+  const bcDuration = segmentTravelMinutes(fiveStations[1], fiveStations[2], 'SUBWAY') // b-c
+  assert.equal(abDuration, bcDuration) // 등간격 역이라 구간 소요시간이 같다
+
+  // a에서 출발해 딱 b에 도착할 만큼만 전진 — 완행이라면 b에서 정차했을 시점.
+  const atB = advanceVehicleMotion(fiveStations, {
+    currentStationId: 'a',
+    direction: 1,
+    segmentProgressMinutes: 0,
+  }, abDuration, 'SUBWAY', expressStops)
+
+  // b를 건너뛰어 c로 순간이동한 게 아니라, 실제로 b 위치(x=10)를 지나가고 있어야 한다.
+  assert.equal(atB.currentStationId, 'b')
+  assert.equal(atB.x, 10)
+  assert.equal(atB.isDwelling, false) // 정차역이 아니므로 서지 않는다
+  assert.deepEqual(atB.arrivedStationIds, []) // 도착 이벤트(=탑승 처리 대상)에도 안 잡힌다
+
+  // 계속 이어서(a→b→c) c에 도착할 만큼 전진하면, c는 정차역이라 실제로 선다.
+  const atC = advanceVehicleMotion(fiveStations, {
+    currentStationId: 'a',
+    direction: 1,
+    segmentProgressMinutes: 0,
+  }, abDuration + bcDuration, 'SUBWAY', expressStops)
+  assert.equal(atC.currentStationId, 'c')
+  assert.equal(atC.x, 20)
+  assert.equal(atC.isDwelling, true)
+  assert.deepEqual(atC.arrivedStationIds, ['c'])
+})
+
+test('stopStationIds를 안 주면(완행) 모든 역에 정차한다 — 기존 동작 그대로', () => {
+  const motion = advanceVehicleMotion(fiveStations, {
+    currentStationId: 'a',
+    direction: 1,
+    segmentProgressMinutes: 0,
+  }, 200, 'SUBWAY')
+
+  assert.deepEqual(motion.arrivedStationIds.length > 0, true)
+  for (const id of motion.arrivedStationIds) assert.ok(['a', 'b', 'c', 'd', 'e'].includes(id))
+})
 
 test('역간 거리와 교통수단에 따라 이동 시간이 달라진다', () => {
   const shortSubway = segmentTravelMinutes(stations[0], stations[1], 'SUBWAY')

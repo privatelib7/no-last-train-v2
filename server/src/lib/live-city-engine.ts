@@ -22,6 +22,7 @@ import { db } from './db'
 import type { Line, Vehicle, Station, Passenger, GameEvent, Policy, CityStatus } from '@prisma/client'
 import {
   advanceVehicleMotion,
+  expressStopStationIds,
   stationDwellMinutes,
   type MotionStation,
 } from './vehicle-motion'
@@ -323,6 +324,7 @@ export function advanceFrame(engine: LiveCityEngine, now: number): void {
   for (const line of engine.lines) {
     if (line.status !== 'OPERATING') continue
     if (line.stations.length < 2) continue
+    const expressStops = expressStopStationIds(line.stations)
 
     for (const vehicle of line.vehicles) {
       if (!isVehicleInService(vehicle)) continue
@@ -338,7 +340,7 @@ export function advanceFrame(engine: LiveCityEngine, now: number): void {
         currentStationId: vehicle.currentStationId ?? line.stations[0].id,
         direction: vehicle.direction,
         segmentProgressMinutes: vehicle.segmentProgressMinutes,
-      }, stepMinutes, line.mode)
+      }, stepMinutes, line.mode, vehicle.isExpress ? expressStops : null)
 
       for (const stationId of motion.arrivedStationIds) {
         boardAtStation(engine, stationId, vehicle)
@@ -610,6 +612,7 @@ function toCityMotionBase(engine: LiveCityEngine, now: number): CityMotionBase {
         currentStationId: v.currentStationId,
         direction: v.direction,
         segmentProgressMinutes: v.segmentProgressMinutes,
+        isExpress: v.isExpress,
       })),
     })),
   }

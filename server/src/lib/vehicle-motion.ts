@@ -12,6 +12,20 @@ export type VehicleMotionState = {
   segmentProgressMinutes: number
 }
 
+/**
+ * 급행 정차역 집합 — 한 칸씩 건너뛰어 2개 역마다 정차한다. 노선을 따라 역 하나씩
+ * 지나가는 이동 자체(advanceVehicleMotion의 인접역 순회)는 완행과 똑같이 유지하고,
+ * 이 집합에 없는 역은 "정차하지 않고 통과"만 시킨다 — 그래서 A에서 C로 건너뛸 때도
+ * 실제로는 B 위치를 그대로 지나가며 이동하지, B를 건너뛰고 순간이동하지 않는다.
+ * 마지막 역은 짝이 안 맞아도 항상 포함해 종점을 건너뛰지 않게 한다.
+ */
+export function expressStopStationIds(stations: MotionStation[]): Set<string> {
+  const ids = new Set<string>()
+  for (let i = 0; i < stations.length; i += 2) ids.add(stations[i].id)
+  if (stations.length > 0) ids.add(stations[stations.length - 1].id)
+  return ids
+}
+
 export type VehicleMotion = {
   currentStationId: string | null
   nextStationId: string | null
@@ -109,12 +123,17 @@ function nextStation(
 /**
  * 저장된 구간 진행 상태에서 임의의 게임 분만큼 전진한다.
  * 한 번의 경제 틱 안에서 여러 역을 통과할 수 있고, 역간 이동은 틱 경계와 무관하다.
+ *
+ * stopStationIds를 주면(급행) 그 집합에 없는 역은 도착해도 정차(dwellRemainingMinutes)하지
+ * 않고 arrivedStationIds에도 넣지 않은 채 바로 다음 구간으로 넘어간다 — 인접역을
+ * 하나씩 지나가는 이동 자체는 완행과 동일하고, "정차 여부"만 달라진다.
  */
 export function advanceVehicleMotion(
   stations: MotionStation[],
   state: VehicleMotionState,
   elapsedGameMinutes: number,
   mode: TransitMode,
+  stopStationIds?: Set<string> | null,
 ): VehicleMotion {
   if (stations.length === 0 || !state.currentStationId) {
     return {
@@ -190,8 +209,12 @@ export function advanceVehicleMotion(
     remainingMinutes -= minutesToArrival
     currentIndex = next.nextIndex
     segmentProgressMinutes = 0
+    const arrivedStation = stations[currentIndex]
+    const isStop = !stopStationIds || stopStationIds.has(arrivedStation.id)
+    if (!isStop) continue // 급행 통과역 — 정차 없이 바로 다음 구간으로
+
     dwellRemainingMinutes = stationDwellMinutes(mode)
-    arrivedStationIds.push(stations[currentIndex].id)
+    arrivedStationIds.push(arrivedStation.id)
 
     // 정확히 역에 도착한 시점이면 다음 호출에서 정차 시간을 소비한다.
     if (remainingMinutes === 0) break

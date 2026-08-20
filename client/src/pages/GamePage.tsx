@@ -167,9 +167,10 @@ function linePoints(line: GameLine) {
 }
 
 function trainStatus(vehicle: Vehicle) {
-  if (vehicle.isSpare) return '대기'
-  if (vehicle.status === 'OPERATING') return '운행 중'
-  if (vehicle.status === 'LOANED') return '지원 운행'
+  const suffix = vehicle.isExpress ? ' · 급행' : ''
+  if (vehicle.isSpare) return `대기${suffix}`
+  if (vehicle.status === 'OPERATING') return `운행 중${suffix}`
+  if (vehicle.status === 'LOANED') return `지원 운행${suffix}`
   if (vehicle.status === 'MAINTENANCE') return '정비 중'
   return '운행 불가'
 }
@@ -1881,15 +1882,27 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
             </div>
 
             {selectedVehicle && (
-              <button
-                className={styles.removeVehicleButton}
-                onClick={() => void performAction({
-                  type: 'REMOVE_VEHICLE',
-                  lineId: selectedVehicleLine!.id,
-                  vehicleId: selectedVehicle.id,
-                })}
-                disabled={busy}
-              >선택 차량 제거</button>
+              <>
+                <button
+                  className={`${styles.expressVehicleButton} ${selectedVehicle.isExpress ? styles.expressVehicleButtonActive : ''}`}
+                  onClick={() => void performAction({
+                    type: 'SET_VEHICLE_EXPRESS',
+                    lineId: selectedVehicleLine!.id,
+                    vehicleId: selectedVehicle.id,
+                    express: !selectedVehicle.isExpress,
+                  })}
+                  disabled={busy}
+                >{selectedVehicle.isExpress ? '급행 해제 (완행으로 전환)' : '급행으로 전환 (역 2개씩 정차)'}</button>
+                <button
+                  className={styles.removeVehicleButton}
+                  onClick={() => void performAction({
+                    type: 'REMOVE_VEHICLE',
+                    lineId: selectedVehicleLine!.id,
+                    vehicleId: selectedVehicle.id,
+                  })}
+                  disabled={busy}
+                >선택 차량 제거</button>
+              </>
             )}
           </section>
         )}

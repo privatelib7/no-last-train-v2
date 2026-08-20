@@ -373,7 +373,7 @@ function LiveTransitLayer({
             <g
               key={vehicle.id}
               transform={`translate(${motion.x} ${motion.y}) rotate(${trainAngle})${trainFlipped ? ' scale(-1,1)' : ''} scale(${mapScale * VEHICLE_SCALE})`}
-              className={`${styles.trainIcon} ${vehicle.id === selectedVehicleId ? styles.selectedTrain : ''}`}
+              className={`${styles.trainIcon} ${vehicle.id === selectedVehicleId ? styles.selectedTrain : ''} ${vehicle.isExpress ? styles.expressTrain : ''}`}
               onClick={event => { event.stopPropagation(); onSelectVehicle(line.id, vehicle.id) }}
               role="button"
               tabIndex={0}
