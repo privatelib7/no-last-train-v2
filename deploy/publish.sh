@@ -119,7 +119,11 @@ if [[ $failed -ne 0 ]]; then
   exit 1
 fi
 
-url="http://${NLT_DOMAIN:-localhost}$([[ "${NLT_HTTP_PORT:-80}" != "80" ]] && echo ":${NLT_HTTP_PORT}")"
+# set -e 아래에서 $([[ ... ]] && echo ...) 는 조건이 거짓일 때 대입 자체가 실패한다.
+url="http://${NLT_DOMAIN:-localhost}"
+if [[ "${NLT_HTTP_PORT:-80}" != "80" ]]; then
+  url="${url}:${NLT_HTTP_PORT}"
+fi
 # certbot 이 443 블록을 만들어 뒀으면 https 주소를 안내한다
 if [[ -n "${NLT_DOMAIN:-}" ]] && grep -qs 'listen 443' /etc/nginx/sites-available/nlt; then
   url="https://${NLT_DOMAIN}"

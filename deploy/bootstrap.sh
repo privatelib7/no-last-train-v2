@@ -195,6 +195,8 @@ fi
 
 # ── 7. server/.env ─────────────────────────────────────────────────────────
 ENV_FILE="$REPO_ROOT/server/.env"
+base_url="http://${DOMAIN}"
+[[ "$HTTP_PORT" == "80" ]] || base_url="${base_url}:${HTTP_PORT}"
 if [[ ! -f "$ENV_FILE" ]]; then
   log "server/.env 생성"
   # sslmode=disable: 로컬 Docker PostgreSQL 은 TLS 를 쓰지 않는다.
@@ -204,7 +206,7 @@ PORT="3001"
 REALTIME_PORT="3012"
 DATABASE_URL="postgresql://nlt:${DB_PASSWORD}@127.0.0.1:5432/no_last_train?sslmode=disable"
 REDIS_URL="redis://127.0.0.1:6379"
-APP_BASE_URL="http://${DOMAIN}$([[ "$HTTP_PORT" != "80" ]] && echo ":$HTTP_PORT")"
+APP_BASE_URL="${base_url}"
 
 # 선택 항목 — 필요할 때 채운다 (server/.env.example 주석 참고)
 # OPENAI_API_KEY=""
