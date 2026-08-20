@@ -87,8 +87,12 @@ test('역 도착 후 승하차 시간만큼 정차한 뒤 다시 출발한다', 
 // 예전 버그: 짧아진 새 구간 길이에 진행 분(min)이 그대로 클램프되어 차량이 b로 순간이동했다.
 const lineWithoutB: MotionStation[] = [stations[0], stations[2]]
 
+function assertClose(actual: number, expected: number, epsilon = 1e-9) {
+  assert.ok(Math.abs(actual - expected) < epsilon, `expected ${actual} to be close to ${expected}`)
+}
+
 test('삽입 지점 이전을 지나던 차량은 출발역에 남아 물리적 위치를 유지한다', () => {
-  // a→c 28분 구간 중 7분 경과 = 실제 이동 거리 7.5 (전체 거리 30의 25%), 아직 b(거리 10) 전이다.
+  // a→c 28.5분 구간(거리30/속도1.05, 클램프 없음) 중 7분 경과 = 실제 이동 거리 7.368..., 아직 b(거리 10) 전이다.
   const fix = reconcileVehicleForInsertedStation(
     lineWithoutB,
     { currentStationId: 'a', direction: 1, segmentProgressMinutes: 7 },
@@ -98,15 +102,15 @@ test('삽입 지점 이전을 지나던 차량은 출발역에 남아 물리적 
   )
   assert.ok(fix)
   assert.equal(fix.currentStationId, 'a')
-  assert.equal(fix.segmentProgressMinutes, 7.125)
+  assert.equal(fix.segmentProgressMinutes, 7)
 
-  // 새 역이 반영된 노선에서 다시 위치를 구하면 순간이동 없이 같은 물리적 지점(x=7.5)에 있어야 한다.
+  // 새 역이 반영된 노선에서 다시 위치를 구하면 순간이동 없이 같은 물리적 지점에 있어야 한다.
   const after = advanceVehicleMotion(stations, { currentStationId: 'a', direction: 1, segmentProgressMinutes: fix.segmentProgressMinutes }, 0, 'SUBWAY')
-  assert.equal(after.x, 7.5)
+  assertClose(after.x ?? NaN, 10 * (7 / 9.5))
 })
 
 test('삽입 지점을 이미 지난 차량은 새 역을 출발점 삼아 남은 구간을 이어간다', () => {
-  // a→c 28분 구간 중 14분 경과(정확히 절반, 실제 이동 거리 15) = b(거리 10)를 이미 지난 상태.
+  // a→c 28.5분 구간 중 14분 경과 = 실제 이동 거리 14.736..., b(거리 10)를 이미 지난 상태.
   const fix = reconcileVehicleForInsertedStation(
     lineWithoutB,
     { currentStationId: 'a', direction: 1, segmentProgressMinutes: 14 },
@@ -116,11 +120,11 @@ test('삽입 지점을 이미 지난 차량은 새 역을 출발점 삼아 남�
   )
   assert.ok(fix)
   assert.equal(fix.currentStationId, 'b')
-  assert.equal(fix.segmentProgressMinutes, 4.75)
+  assert.equal(fix.segmentProgressMinutes, 4.5)
 
-  // 새 역이 반영된 노선에서 다시 위치를 구하면 순간이동 없이 같은 물리적 지점(x=15)에 있어야 한다.
+  // 새 역이 반영된 노선에서 다시 위치를 구하면 순간이동 없이 같은 물리적 지점에 있어야 한다.
   const after = advanceVehicleMotion(stations, { currentStationId: 'b', direction: 1, segmentProgressMinutes: fix.segmentProgressMinutes }, 0, 'SUBWAY')
-  assert.equal(after.x, 15)
+  assertClose(after.x ?? NaN, 10 + 20 * (4.5 / 19))
 })
 
 test('정차 중이거나 다른 구간을 지나는 차량은 삽입에 영향받지 않는다', () => {

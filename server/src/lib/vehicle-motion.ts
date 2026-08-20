@@ -81,15 +81,15 @@ export function depotPulloutMinutes(mode: TransitMode): number {
 
 /**
  * 지도상 거리와 교통수단 속도로 역간 게임 소요시간을 계산한다.
+ * min/max로 클램프하면 프론트엔드 보간 구간 길이가 실제 거리와 어긋나면서
+ * 차량이 순간이동하듯 띄엄띄엄 움직이는 문제가 있어 클램프 없이 실거리 기준 시간을 그대로 쓴다.
  * 0.5분 단위로 반올림해 짧은 도심 구간과 긴 외곽 구간이 서로 다른 시간을 갖는다.
  */
 export function segmentTravelMinutes(from: MotionStation, to: MotionStation, mode: TransitMode): number {
   const transitMode = normalizedMode(mode)
   const distance = Math.hypot(to.posX - from.posX, to.posY - from.posY)
-  const limits = MODE_DURATION_LIMITS[transitMode]
   const rawMinutes = distance / MODE_SPEED[transitMode]
-  const clamped = Math.max(limits.min, Math.min(limits.max, rawMinutes))
-  return Math.round(clamped * 2) / 2
+  return Math.round(rawMinutes * 2) / 2
 }
 
 function nextStation(
