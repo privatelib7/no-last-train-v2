@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   advanceVehicleMotion,
+  spreadBunchedVehicles,
   expressStopStationIds,
   reconcileVehicleForInsertedStation,
   segmentTravelMinutes,
@@ -207,4 +208,26 @@ test('정차 중이거나 다른 구간을 지나는 차량은 삽입에 영향�
     'SUBWAY',
   )
   assert.equal(unrelatedSegment, null)
+})
+test('같은 위치·방향으로 겹친 차량만 배차 간격만큼 뒤로 물린다', () => {
+  const bunched = [
+    { currentStationId: 'a', direction: 1, segmentProgressMinutes: -2, headwayMinutes: 6 },
+    { currentStationId: 'a', direction: 1, segmentProgressMinutes: -2, headwayMinutes: 6 },
+    { currentStationId: 'a', direction: 1, segmentProgressMinutes: -2, headwayMinutes: 6 },
+  ]
+  // 겹친 순번만큼 누적해 물린다 — 뒤 두 대가 다시 서로 붙으면 안 된다
+  assert.equal(spreadBunchedVehicles(bunched).length, 2)
+  assert.deepEqual(bunched.map(v => v.segmentProgressMinutes), [-2, -8, -14])
+
+  // 반대 방향이거나 이미 벌어진 차량은 건드리지 않는다
+  const spread = [
+    { currentStationId: 'a', direction: 1, segmentProgressMinutes: -2, headwayMinutes: 6 },
+    { currentStationId: 'a', direction: -1, segmentProgressMinutes: -2, headwayMinutes: 6 },
+    { currentStationId: 'a', direction: 1, segmentProgressMinutes: 3, headwayMinutes: 6 },
+  ]
+  assert.equal(spreadBunchedVehicles(spread).length, 0)
+  assert.deepEqual(spread.map(v => v.segmentProgressMinutes), [-2, -2, 3])
+
+  // 한 번 벌어지고 나면 다시 부르더라도 그대로 둔다
+  assert.equal(spreadBunchedVehicles(bunched).length, 0)
 })

@@ -7,7 +7,7 @@ import {
   isManagementGoalDeadlineMissed,
   resolveManagementGoal,
 } from './economy'
-import { advanceVehicleMotion, expressStopStationIds, stationDwellMinutes } from './vehicle-motion'
+import { advanceVehicleMotion, expressStopStationIds, spreadBunchedVehicles, stationDwellMinutes } from './vehicle-motion'
 import { isVehicleInService } from './vehicle-service'
 import { calcServiceScore } from './service-score'
 import { SIM, dayIndexOfTick } from '@/types/game'
@@ -583,6 +583,8 @@ async function moveVehiclesAndBoard(
     const expressStops = expressStopStationIds(stationOrder)
 
     const orderedVehicles = line.vehicles.slice().sort((a, b) => a.id.localeCompare(b.id))
+    // 라이브 엔진과 같은 규칙 — 겹쳐 달리는 차량을 전진 전에 떼어놓는다.
+    spreadBunchedVehicles(orderedVehicles.filter(isVehicleInService))
     for (const vehicle of orderedVehicles) {
       if (!isVehicleInService(vehicle)) continue
 

@@ -23,6 +23,7 @@ import type { Line, Vehicle, Station, Passenger, GameEvent, Policy, CityStatus }
 import {
   advanceVehicleMotion,
   expressStopStationIds,
+  spreadBunchedVehicles,
   stationDwellMinutes,
   type MotionStation,
 } from './vehicle-motion'
@@ -402,6 +403,11 @@ export function advanceFrame(engine: LiveCityEngine, now: number): void {
     if (line.status !== 'OPERATING') continue
     if (line.stations.length < 2) continue
     const expressStops = expressStopStationIds(line.stations)
+    // 겹쳐 달리는 차량은 앞차가 승객을 다 태워 뒤차가 놀게 된다. 전진 전에 떼어놓는다.
+    for (const moved of spreadBunchedVehicles(line.vehicles.filter(isVehicleInService))) {
+      engine.dirtyVehicleIds.add(moved.id)
+    }
+
     for (const vehicle of line.vehicles) {
       if (!isVehicleInService(vehicle)) continue
 

@@ -293,3 +293,35 @@ export function reconcileVehicleForInsertedStation(
     segmentProgressMinutes: fraction * segmentTravelMinutes(insertedStation, endStation, mode),
   }
 }
+
+export type BunchableVehicle = {
+  currentStationId: string | null
+  direction: number
+  segmentProgressMinutes: number
+  headwayMinutes: number
+}
+
+/**
+ * 같은 노선에서 완전히 같은 위치·방향으로 겹쳐 달리는 차량을 배차 간격만큼 뒤로 물린다.
+ *
+ * 차량 투입(SET_VEHICLE_SERVICE)은 모든 차량에 같은 출발 상태를 주고 이동 계산은
+ * 결정적이라, 한 노선에 여러 대를 넣으면 좌표까지 똑같이 붙어 달린다. 그러면 앞차가
+ * 역의 대기 승객을 전부 태우고 뒤차는 한 명도 못 태워, 차량을 더 사도 수송량이 늘지 않는다.
+ * 한 번 벌어지면 같은 속도로 달리므로 간격이 유지된다.
+ *
+ * 넘긴 배열을 그대로 고쳐 쓰고, 실제로 움직인 차량만 돌려준다(호출부가 저장 대상 표시에 쓴다).
+ */
+export function spreadBunchedVehicles<T extends BunchableVehicle>(vehicles: T[]): T[] {
+  const seenCount = new Map<string, number>()
+  const moved: T[] = []
+  for (const vehicle of vehicles) {
+    const key = `${vehicle.currentStationId}|${vehicle.direction}|${vehicle.segmentProgressMinutes}`
+    const already = seenCount.get(key) ?? 0
+    seenCount.set(key, already + 1)
+    if (already === 0) continue
+    // 음수 progress = 역에 정차한 채 남은 시간. 겹친 순번만큼 더 세워 뒤로 보낸다.
+    vehicle.segmentProgressMinutes -= Math.max(1, vehicle.headwayMinutes) * already
+    moved.push(vehicle)
+  }
+  return moved
+}
