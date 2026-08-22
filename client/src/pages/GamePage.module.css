@@ -2775,7 +2775,21 @@
 
 /* 노선 양 끝 번호 배지 */
 .lineEndBadge {
-  pointer-events: none;
+  cursor: grab;
+  outline: none;
+}
+
+.lineEndBadge:active {
+  cursor: grabbing;
+}
+
+.lineEndBadge circle {
+  transition: r 90ms ease-out;
+}
+
+.lineEndBadge:hover circle,
+.lineEndBadge:focus-visible circle {
+  r: 1.85;
 }
 
 .lineEndBadge circle {

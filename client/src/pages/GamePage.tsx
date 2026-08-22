@@ -39,6 +39,8 @@ type DragTarget = { kind: 'STATION'; id: string } | null
 
 type StationLinkDrag = {
   stationId: string
+  /** 노선 끝 배지에서 시작한 드래그 — 선택 노선 대신 이 노선을 잇는다 */
+  lineId?: string
   startX: number
   startY: number
   x: number
@@ -1190,11 +1192,14 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     setSegmentDrag(next)
   }
 
-  const beginStationLinkDrag = (event: PointerEvent<SVGGElement>, stationId: string) => {
+  const beginStationLinkDrag = (event: PointerEvent<SVGGElement>, stationId: string, lineId?: string) => {
     if (event.button !== 0 || busy || stationBuildMode || moveStationMode) return
     event.stopPropagation()
+    // 배지에서 끌기 시작하면 그 노선을 선택해 둔다 — 고스트 선 색과 사이드바가 따라온다
+    if (lineId && lineId !== selectedLineId) selectLine(lineId)
     const next: StationLinkDrag = {
       stationId,
+      lineId,
       startX: event.clientX,
       startY: event.clientY,
       x: event.clientX,
@@ -1375,15 +1380,16 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       window.setTimeout(() => { suppressStationClick.current = false }, 0)
       const targetId = document.elementFromPoint(event.clientX, event.clientY)
         ?.closest('[data-station-id]')?.getAttribute('data-station-id')
-      if (!targetId || targetId === current.stationId || !selectedLineId) return
+      const dragLineId = current.lineId ?? selectedLineId
+      if (!targetId || targetId === current.stationId || !dragLineId) return
       const cityState = stateRef.current
-      const dragLine = cityState?.city.lines.find(item => item.id === selectedLineId)
+      const dragLine = cityState?.city.lines.find(item => item.id === dragLineId)
       const fromStation = cityState?.city.stations.find(s => s.id === current.stationId)
       const toStation = cityState?.city.stations.find(s => s.id === targetId)
       if (!dragLine || !fromStation || !toStation) return
       void performActionRef.current?.({
         type: 'BUILD_SEGMENT',
-        lineId: selectedLineId,
+        lineId: dragLineId,
         fromStationId: current.stationId,
         toStationId: targetId,
       })
@@ -2336,7 +2342,14 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                 key={badge.id}
                 transform={`translate(${badge.x} ${badge.y}) scale(${mapScale})`}
                 className={`${styles.lineEndBadge}${badge.line.status === 'SUSPENDED' ? ` ${styles.closedLine}` : ''}`}
+                onPointerDown={event => beginStationLinkDrag(event, badge.station.id, badge.line.id)}
+                onClick={event => event.stopPropagation()}
+                role="button"
+                tabIndex={0}
+                data-map-interactive="true"
+                aria-label={`${lineDisplayName(badge.line.name)} ${badge.isHead ? '시작' : '종점'} — 역으로 끌어 연장`}
               >
+                <title>{lineDisplayName(badge.line.name)} 종점 · 역으로 끌어다 놓으면 연장됩니다</title>
                 <circle r="1.65" fill={LINE_COLORS[badge.line.color]} />
                 <text textAnchor="middle" y="0.64">{badge.label}</text>
               </g>
