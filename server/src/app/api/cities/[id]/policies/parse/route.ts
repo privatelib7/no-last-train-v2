@@ -51,8 +51,7 @@ export async function POST(
       ?? stations[0].id
   }
   if (policy.actionType === 'LEND_VEHICLE') {
-    policy.actionTargetLineId = lines.find(line => line.color === 'BLUE')?.id
-      ?? lines.find(line => line.id !== policy.actionTargetLineId)?.id
+    policy.actionTargetLineId = lines.find(line => line.id !== policy.actionTargetLineId)?.id
   }
 
   return NextResponse.json({ ok: true, policy })

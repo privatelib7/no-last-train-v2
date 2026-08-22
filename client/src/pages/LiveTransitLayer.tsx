@@ -13,6 +13,7 @@ import {
   modeCruiseSpeed,
   type RenderedVehicleMotion,
 } from '../vehicle-motion'
+import { resolveLineColor } from '../lib/line-color'
 import styles from './GamePage.module.css'
 
 const LIVE_TICK_MS = 3000
@@ -25,14 +26,6 @@ const VEHICLE_SCALE = 0.62
 const EARNINGS_FLASH_DURATION_MS = 1600
 const EARNINGS_FLASH_RISE_UNITS = 3.5
 const HUD_SAMPLE_MS = 500
-
-const LINE_COLORS: Record<string, string> = {
-  RED: '#E9783C',
-  BLUE: '#3F8EDB',
-  GREEN: '#55A96A',
-  YELLOW: '#E1B735',
-  PURPLE: '#8E6CC1',
-}
 
 const CITIZEN_MODE_CLASSES: Record<CitizenTravelMode, string> = {
   WALK: styles.personWalking,
@@ -397,7 +390,7 @@ function LiveTransitLayer({
             >
               {line.mode === 'BUS' ? (
                 <>
-                  <rect x="-3" y="-2.1" width="6" height="4.2" rx="1.6" fill={LINE_COLORS[line.color]} className={styles.trainBody} />
+                  <rect x="-3" y="-2.1" width="6" height="4.2" rx="1.6" fill={resolveLineColor(line.color)} className={styles.trainBody} />
                   <rect x="-2.2" y="-1.35" width="2.7" height="1.35" rx=".3" className={styles.trainWindow} />
                   <rect x="1" y="-1.15" width="1.15" height="2.5" rx=".22" className={styles.busDoor} />
                   <circle cx="-1.6" cy="2.05" r=".56" className={styles.trainWheel} />
@@ -407,7 +400,7 @@ function LiveTransitLayer({
               ) : (
                 <>
                   <path d="M-1.6 -2.9H1.6M-1.1 -2L0 -2.85L1.1 -2" className={styles.pantograph} />
-                  <rect x="-3.7" y="-2" width="7.4" height="4" rx="1.2" fill={LINE_COLORS[line.color]} className={styles.trainBody} />
+                  <rect x="-3.7" y="-2" width="7.4" height="4" rx="1.2" fill={resolveLineColor(line.color)} className={styles.trainBody} />
                   <rect x="-2.8" y="-1.2" width="1.55" height="1.25" rx=".28" className={styles.trainWindow} />
                   <rect x="-.65" y="-1.2" width="1.55" height="1.25" rx=".28" className={styles.trainWindow} />
                   <circle cx="-2.15" cy="1.85" r=".56" className={styles.trainWheel} />

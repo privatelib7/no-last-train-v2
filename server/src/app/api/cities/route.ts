@@ -13,14 +13,6 @@ const CreateCitySchema = z.object({
   lineColor: z.enum(['RED', 'BLUE', 'GREEN', 'YELLOW', 'PURPLE']),
 })
 
-const LINE_COLOR_MAP: Record<string, string> = {
-  RED: 'red',
-  BLUE: 'blue',
-  GREEN: 'green',
-  YELLOW: 'yellow',
-  PURPLE: 'purple',
-}
-
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
@@ -114,7 +106,7 @@ export async function GET(req: NextRequest) {
     seasonDay: city.seasonDay,
     status: city.status,
     lineCount: city._count.lines,
-    lines: city.lines.map((l) => LINE_COLOR_MAP[l.color] ?? l.color.toLowerCase()),
+    lines: city.lines.map((l) => l.color),
     createdAt: city.createdAt.toISOString(),
   }))
 

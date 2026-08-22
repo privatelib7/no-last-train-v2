@@ -139,7 +139,7 @@ model Line {
   id       String     @id @default(cuid())
   cityId   String
   playerId String?                    // null = AI 자동 운영
-  color    LineColor
+  color    String                     // 색상 코드(#RRGGBB). 같은 도시 안에서 겹치지 않아야 한다.
   mode     LineMode   @default(SUBWAY)
   name     String
   status   LineStatus @default(OPERATING)
@@ -155,14 +155,6 @@ model Line {
   actionLogs       ActionLog[]
   supportsGiven    Support[]    @relation("FromLine")
   supportsReceived Support[]    @relation("ToLine")
-}
-
-enum LineColor {
-  RED
-  BLUE
-  GREEN
-  YELLOW
-  PURPLE
 }
 
 enum LineMode {
