@@ -2772,3 +2772,21 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* 노선 양 끝 번호 배지 */
+.lineEndBadge {
+  pointer-events: none;
+}
+
+.lineEndBadge circle {
+  stroke: var(--gp-map-label-halo);
+  stroke-width: 0.28px;
+}
+
+.lineEndBadge text {
+  fill: #fff;
+  font-size: 2.1px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+}
+

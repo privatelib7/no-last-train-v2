@@ -95,6 +95,11 @@ const MAX_VEHICLES_PER_LINE = 8
 // 전철·버스 글리프 축소 배율 — 역/선로에 비해 차량이 너무 커 보이지 않게 한다
 const INITIAL_MAP_VIEW: MapView = { x: 0, y: 0, width: 100, height: 100 }
 
+// 노선 끝 배지 — 종점에서 띄우는 거리 / 겹칠 때 한 칸 간격 / 최대 몇 칸까지 밀지 (지도 단위, mapScale 곱해 씀)
+const BADGE_GAP = 2.4
+const BADGE_STEP = 4.1
+const BADGE_MAX_SHIFT = 6
+
 const LINE_COLORS: Record<string, string> = {
   RED: '#E9783C',
   BLUE: '#3F8EDB',
@@ -1534,6 +1539,35 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const continuousTick = hudSample.continuousTick > 0 ? hudSample.continuousTick : currentTick
   const currentGameDay = Math.floor(continuousTick / TICKS_PER_DAY) + 1
   const mapScale = mapView.width / 100
+  // 노선 끝 배지 위치. 종점이 같은 역인 노선끼리 포개지지 않게 바깥쪽으로 한 칸씩 밀어낸다.
+  const lineEndBadges: Array<{
+    id: string; line: GameLine; label: string; station: Station
+    isHead: boolean; x: number; y: number
+  }> = []
+  for (const line of sortedLines) {
+    if (line.lineStations.length < 2) continue
+    const stops = orderedStations(line)
+    const label = line.name.match(/\d+/)?.[0] ?? line.name.slice(0, 1)
+    for (const [isHead, at, prev] of [
+      [true, stops[0], stops[1]] as const,
+      [false, stops[stops.length - 1], stops[stops.length - 2]] as const,
+    ]) {
+      // 직전 역 → 종점 방향 바깥으로 내보내 역 표시를 가리지 않게 한다
+      const dx = at.posX - prev.posX
+      const dy = at.posY - prev.posY
+      const len = Math.hypot(dx, dy) || 1
+      let x = 0
+      let y = 0
+      for (let step = 0; step <= BADGE_MAX_SHIFT; step += 1) {
+        const distance = (BADGE_GAP + step * BADGE_STEP) * mapScale
+        x = at.posX + (dx / len) * distance
+        y = at.posY + (dy / len) * distance
+        const clashes = lineEndBadges.some(other => Math.hypot(other.x - x, other.y - y) < BADGE_STEP * mapScale)
+        if (!clashes) break
+      }
+      lineEndBadges.push({ id: `${line.id}-${isHead ? 'head' : 'tail'}`, line, label, station: at, isHead, x, y })
+    }
+  }
   const selectedStation = stationById.get(selectedStationId) ?? null
   const gameHour = (continuousTick / TICKS_PER_HOUR) % 24
   const isWeekend = Math.floor(continuousTick / TICKS_PER_DAY) % 7 >= 5
@@ -2296,6 +2330,17 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                 </g>
               )
             })}
+
+            {lineEndBadges.map(badge => (
+              <g
+                key={badge.id}
+                transform={`translate(${badge.x} ${badge.y}) scale(${mapScale})`}
+                className={`${styles.lineEndBadge}${badge.line.status === 'SUSPENDED' ? ` ${styles.closedLine}` : ''}`}
+              >
+                <circle r="1.65" fill={LINE_COLORS[badge.line.color]} />
+                <text textAnchor="middle" y="0.64">{badge.label}</text>
+              </g>
+            ))}
 
             <LiveTransitLayer
               resetKey={cityId}
