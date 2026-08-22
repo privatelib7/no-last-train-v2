@@ -1533,7 +1533,6 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     ? Math.min(100, (state.city.totalRevenue / state.city.revenueGoal) * 100)
     : 0
   const goalJustReached = state.city.goalsCompleted > 0 && state.city.goalReachedAtTick === currentTick
-  const difficultyMultiplier = state.economyRules.operatingCostMultiplier
   const goalDaysRemaining = state.city.goalDeadlineDay - currentGameDay
   const goalDeadlineStatus = goalDaysRemaining > 0
     ? `D-${goalDaysRemaining}`
@@ -1691,8 +1690,8 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
           <div className={`${styles.goalCard} ${goalJustReached ? styles.goalCardReached : ''}`}>
             <div className={styles.goalCardTop}>
               <span>{state.city.finalGoalReached
-                ? `최종 ${state.city.maxGoalLevel}단계 · 난이도 ×${difficultyMultiplier.toFixed(2)}`
-                : `${state.city.goalLevel}단계 · ${state.city.goalDeadlineDay}일차까지 · 난이도 ×${difficultyMultiplier.toFixed(2)}`}</span>
+                ? `최종 ${state.city.maxGoalLevel}단계`
+                : `${state.city.goalLevel}단계 · ${state.city.goalDeadlineDay}일차까지`}</span>
               <b>{formatMoney(state.city.totalRevenue)} <small>/ {formatMoney(state.city.revenueGoal)}</small></b>
             </div>
             <div className={`${styles.goalMeta} ${goalDaysRemaining < 0 ? styles.goalMetaOverdue : ''}`}>
