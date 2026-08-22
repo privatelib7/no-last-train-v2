@@ -1,5 +1,6 @@
 import type { GameLine, Station, StationType } from './api/game'
 import type { CityMapDef } from './maps'
+import { stationDemandWeights } from './demand-profile'
 
 export type CitizenTravelMode = 'WALK' | 'WAIT' | 'BOARDING'
 export type StationAccessMode = 'SUBWAY' | 'BUS' | 'INTERCHANGE' | 'CITY'
@@ -41,33 +42,7 @@ export type CitizenPosition = {
   radiusScale: number
 }
 
-type DayPeriod = 'MORNING' | 'DAY' | 'EVENING' | 'NIGHT'
-type DayKind = 'WEEKDAY' | 'WEEKEND'
 type StationWeights = Record<StationType, number>
-
-// 서버의 승객 출발 수요와 같은 시간대 방향성을 사용한다.
-const STATION_DEMAND_WEIGHTS: Record<DayKind, Record<DayPeriod, StationWeights>> = {
-  WEEKDAY: {
-    MORNING: { RESIDENTIAL: 1.6, COMMERCIAL: 0.5, INDUSTRIAL: 0.4, TOURIST: 0.6, HUB: 1.0 },
-    DAY: { RESIDENTIAL: 0.6, COMMERCIAL: 1.2, INDUSTRIAL: 0.8, TOURIST: 1.2, HUB: 1.0 },
-    EVENING: { RESIDENTIAL: 0.5, COMMERCIAL: 1.2, INDUSTRIAL: 1.5, TOURIST: 0.9, HUB: 1.2 },
-    NIGHT: { RESIDENTIAL: 0.4, COMMERCIAL: 1.0, INDUSTRIAL: 0.3, TOURIST: 0.8, HUB: 0.7 },
-  },
-  WEEKEND: {
-    MORNING: { RESIDENTIAL: 1.0, COMMERCIAL: 0.5, INDUSTRIAL: 0.05, TOURIST: 1.0, HUB: 0.8 },
-    DAY: { RESIDENTIAL: 0.9, COMMERCIAL: 1.4, INDUSTRIAL: 0.05, TOURIST: 1.5, HUB: 1.0 },
-    EVENING: { RESIDENTIAL: 0.7, COMMERCIAL: 1.3, INDUSTRIAL: 0.05, TOURIST: 1.3, HUB: 1.0 },
-    NIGHT: { RESIDENTIAL: 0.5, COMMERCIAL: 0.9, INDUSTRIAL: 0.05, TOURIST: 0.7, HUB: 0.7 },
-  },
-}
-
-function periodOfHour(hour: number): DayPeriod {
-  const normalized = ((Math.floor(hour) % 24) + 24) % 24
-  if (normalized >= 6 && normalized <= 9) return 'MORNING'
-  if (normalized >= 10 && normalized <= 15) return 'DAY'
-  if (normalized >= 16 && normalized <= 19) return 'EVENING'
-  return 'NIGHT'
-}
 
 function randomUnit(seed: number, index: number, salt: number) {
   let value = Math.imul(seed + index * 374761393 + salt * 668265263, 1274126177)
@@ -328,8 +303,9 @@ export function advanceCitizenJourneys(
   // 역이 하나도 없으면(노선 유무와 무관) 배회 시민으로 도시가 비어 보이지 않게 한다.
   const availableStations = allStationsWithAccess(lines, stations)
   const busStops = availableStations.filter(item => item.accessMode === 'BUS')
-  const dayKind: DayKind = weekend ? 'WEEKEND' : 'WEEKDAY'
-  const weights = STATION_DEMAND_WEIGHTS[dayKind][periodOfHour(gameHour)]
+  // 서버 승객 생성과 같은 공공데이터 프로필을 써서 화면 위 사람 흐름을 맞춘다.
+  // map.key가 어느 도시 곡선을 쓸지 정한다 (부산 맵이면 부산 지하철 실측).
+  const weights = stationDemandWeights(map.key, gameHour, weekend) as StationWeights
 
   const remaining = new Map(previous.map(journey => [journey.index, journey]))
   let respawnBudget = options.maxRespawns ?? 12

@@ -35,7 +35,10 @@ import {
   mulberry32,
   activateEvents,
   runCitySimulationExclusive,
+  buildReachability,
+  stationsAhead,
 } from './simulation'
+import { demandMultiplier } from './demand-profile'
 import {
   renderCityMotionSnapshot,
   publishMotionBase,
@@ -43,7 +46,7 @@ import {
   type CityMotionBase,
   type CityMotionSnapshot,
 } from './city-motion'
-import { SIM, TIME_DEMAND_MULTIPLIER, periodOfHour, isWeekendTick } from '@/types/game'
+import { SIM, dayIndexOfTick } from '@/types/game'
 import type { StationSnapshot } from '@/types/game'
 
 /** 한 프레임에서 소화하는 실시간 경과의 상한 — GC 정지 등으로 호출이 밀려도 차량이 순간이동하지 않게 막는다 */
@@ -67,6 +70,9 @@ type EnginePassenger = {
   type: Passenger['type']
   createdAtTick: number
   boardedAtTick: number | null
+  arrivedAtTick: number | null
+  /** 타고 있는 차량 — 승차 시 채우고 목적지에서 내릴 때 비운다 */
+  vehicleId: string | null
   /** 아직 한 번도 flush(=createMany)되지 않은, DB에 없는 승객인지 */
   isNew: boolean
 }
@@ -95,16 +101,24 @@ export type LiveCityEngine = {
   lines: EngineLine[]
   stations: Station[]
   events: GameEvent[]
+  /** 맵 종류 — 어느 도시의 실측 수요 곡선을 쓸지 (City.mapKey) */
+  mapKey: string
+  /** 역별로 «지하철로 갈 수 있는 역» — 목적지 후보. 노선 구성이 바뀌면 다시 만든다 */
+  reachable: Map<string, Station[]>
   /** 역별 대기 승객 FIFO 큐 (createdAtTick 순서 유지) */
   waitQueues: Map<string, EnginePassenger[]>
+  /** 차량별 탑승 중인 승객 — 목적지 역에서 내린다 */
+  onboard: Map<string, EnginePassenger[]>
+  /** 마지막 flush 이후 목적지에 도착한 기존 승객 id → 도착 틱 번호 */
+  arrivedExisting: Map<string, number>
   /** 이번 경제 틱 동안(100ms 프레임들에서) 실제로 태운 인원 — calculateTickEconomy 입력용 */
   boardedSinceLastEconomicTick: number
   /** 마지막 flush 이후 위치가 바뀐 차량 id */
   dirtyVehicleIds: Set<string>
   /** 마지막 flush 이후 새로 생성된(아직 DB에 없는) 승객 */
   newPassengers: EnginePassenger[]
-  /** 마지막 flush 이후 탑승 처리된 기존(DB에 이미 있던) 승객 id → 탑승 틱 번호 */
-  boardedExisting: Map<string, number>
+  /** 마지막 flush 이후 탑승 처리된 기존(DB에 이미 있던) 승객 id → 탑승 틱·차량 */
+  boardedExisting: Map<string, { tick: number; vehicleId: string }>
   /**
    * 가장 최근 advanceFrame 호출에서 각 차량이 태운 인원수 — 매 프레임 시작 시 비우고
    * 그 프레임 동안의 탑승만 담는다. "방금 매출 발생" 클라이언트 팝업이 이 값을 그대로 쓴다.
@@ -147,6 +161,18 @@ export async function createLiveCityEngine(cityId: string): Promise<LiveCityEngi
       await db.city.update({ where: { id: cityId }, data: { currentTick: baseTick } })
     }
 
+    const toEngine = (p: Passenger): EnginePassenger => ({
+      id: p.id,
+      originStationId: p.originStationId,
+      destStationId: p.destStationId,
+      type: p.type,
+      createdAtTick: p.createdAtTick,
+      boardedAtTick: p.boardedAtTick,
+      arrivedAtTick: p.arrivedAtTick,
+      vehicleId: p.vehicleId,
+      isNew: false,
+    })
+
     const waitingPassengers = await db.passenger.findMany({
       where: { cityId, boardedAtTick: null },
       orderBy: [{ createdAtTick: 'asc' }, { id: 'asc' }],
@@ -154,16 +180,21 @@ export async function createLiveCityEngine(cityId: string): Promise<LiveCityEngi
     const waitQueues = new Map<string, EnginePassenger[]>()
     for (const p of waitingPassengers) {
       const queue = waitQueues.get(p.originStationId) ?? []
-      queue.push({
-        id: p.id,
-        originStationId: p.originStationId,
-        destStationId: p.destStationId,
-        type: p.type,
-        createdAtTick: p.createdAtTick,
-        boardedAtTick: null,
-        isNew: false,
-      })
+      queue.push(toEngine(p))
       waitQueues.set(p.originStationId, queue)
+    }
+
+    // 이미 차에 타 있던 승객도 실어 온다 — 안 그러면 구독이 끊길 때마다 «영원히 못 내리는»
+    // 승객이 DB에 쌓인다.
+    const ridingPassengers = await db.passenger.findMany({
+      where: { cityId, arrivedAtTick: null, vehicleId: { not: null } },
+      orderBy: [{ createdAtTick: 'asc' }, { id: 'asc' }],
+    })
+    const onboard = new Map<string, EnginePassenger[]>()
+    for (const p of ridingPassengers) {
+      const list = onboard.get(p.vehicleId!) ?? []
+      list.push(toEngine(p))
+      onboard.set(p.vehicleId!, list)
     }
 
     const lines: EngineLine[] = city.lines.map(line => ({
@@ -199,7 +230,11 @@ export async function createLiveCityEngine(cityId: string): Promise<LiveCityEngi
       lines,
       stations: city.stations,
       events: city.events,
+      mapKey: city.mapKey,
+      reachable: buildReachability(city.stations, city.lines),
       waitQueues,
+      onboard,
+      arrivedExisting: new Map(),
       boardedSinceLastEconomicTick: 0,
       dirtyVehicleIds: new Set(),
       newPassengers: [],
@@ -283,26 +318,68 @@ export async function refreshLiveEngineTopology(engine: LiveCityEngine): Promise
     })
 
     engine.lines = nextLines
+    // 노선을 새로 짓거나 연장하면 «갈 수 있는 역»이 달라진다. 같이 갱신하지 않으면
+    // 새로 이어진 역이 목적지 후보에 영영 안 들어온다.
+    engine.reachable = buildReachability(city.stations, city.lines)
   })
 }
 
-function boardAtStation(engine: LiveCityEngine, stationId: string, vehicle: EngineVehicle): void {
-  const queue = engine.waitQueues.get(stationId)
-  if (!queue || queue.length === 0) return
-  const boarding = Math.min(queue.length, vehicle.capacity)
-  if (boarding <= 0) return
-  const boarded = queue.splice(0, boarding)
+// simulation.ts의 moveVehiclesAndBoard와 같은 규칙을 메모리 상태로 수행한다.
+// 두 경로(라이브 구독 / DB 따라잡기)가 어긋나면 화면과 저장된 결과가 달라진다.
+function alightAndBoardAtStation(
+  engine: LiveCityEngine,
+  stationId: string,
+  vehicle: EngineVehicle,
+  line: EngineLine,
+): void {
   // 지금 누적 중인(아직 확정 안 된) 경제 틱 번호로 찍는다 — flush 시 이 틱이 확정된다.
   const tickNumber = engine.currentTick + 1
-  for (const p of boarded) {
-    p.boardedAtTick = tickNumber
-    if (!p.isNew) engine.boardedExisting.set(p.id, tickNumber)
+  const riding = engine.onboard.get(vehicle.id) ?? []
+
+  // 1) 하차 먼저 — 자리를 비워야 그만큼 태울 수 있다.
+  const staying: EnginePassenger[] = []
+  for (const p of riding) {
+    if (p.destStationId === stationId) {
+      p.arrivedAtTick = tickNumber
+      p.vehicleId = null
+      if (!p.isNew) engine.arrivedExisting.set(p.id, tickNumber)
+    } else {
+      staying.push(p)
+    }
   }
-  engine.boardedSinceLastEconomicTick += boarded.length
-  engine.justBoardedByVehicleId.set(
-    vehicle.id,
-    (engine.justBoardedByVehicleId.get(vehicle.id) ?? 0) + boarded.length,
-  )
+
+  // 2) 승차 — 진행 방향 앞쪽에 목적지가 있는 승객만, 남은 자리만큼.
+  const room = vehicle.capacity - staying.length
+  const queue = engine.waitQueues.get(stationId)
+  if (room > 0 && queue && queue.length > 0) {
+    const ahead = new Set(stationsAhead(line.stations, stationId, vehicle.direction))
+    if (ahead.size > 0) {
+      const boarded: EnginePassenger[] = []
+      const remaining: EnginePassenger[] = []
+      for (const p of queue) {
+        // FIFO를 지키되(먼저 온 사람이 먼저 탄다) 방향이 안 맞으면 다음 차를 기다린다.
+        if (boarded.length < room && ahead.has(p.destStationId)) boarded.push(p)
+        else remaining.push(p)
+      }
+      if (boarded.length > 0) {
+        engine.waitQueues.set(stationId, remaining)
+        for (const p of boarded) {
+          p.boardedAtTick = tickNumber
+          p.vehicleId = vehicle.id
+          if (!p.isNew) engine.boardedExisting.set(p.id, { tick: tickNumber, vehicleId: vehicle.id })
+          staying.push(p)
+        }
+        engine.boardedSinceLastEconomicTick += boarded.length
+        engine.justBoardedByVehicleId.set(
+          vehicle.id,
+          (engine.justBoardedByVehicleId.get(vehicle.id) ?? 0) + boarded.length,
+        )
+      }
+    }
+  }
+
+  if (staying.length > 0) engine.onboard.set(vehicle.id, staying)
+  else engine.onboard.delete(vehicle.id)
 }
 
 /**
@@ -343,7 +420,7 @@ export function advanceFrame(engine: LiveCityEngine, now: number): void {
       }, stepMinutes, line.mode, vehicle.isExpress ? expressStops : null)
 
       for (const stationId of motion.arrivedStationIds) {
-        boardAtStation(engine, stationId, vehicle)
+        alightAndBoardAtStation(engine, stationId, vehicle, line)
       }
 
       vehicle.currentStationId = motion.currentStationId
@@ -375,10 +452,9 @@ function buildStationSnapshots(engine: LiveCityEngine): StationSnapshot[] {
 async function runSingleEconomicTick(engine: LiveCityEngine): Promise<void> {
   const tickNumber = engine.currentTick + 1
   const gameTimeHour = (tickNumber / SIM.TICKS_PER_GAME_HOUR) % 24
-  const weekend = isWeekendTick(tickNumber)
-  const period = periodOfHour(gameTimeHour)
-  const baseDemand = TIME_DEMAND_MULTIPLIER[Math.floor(gameTimeHour)] ?? 1.0
-  const demandMult = weekend ? Math.min(baseDemand, 1.3) : baseDemand
+  const dayIndex = dayIndexOfTick(tickNumber)
+  // 시간대·요일 배율은 그 맵의 실측 승하차에서 뽑은 프로필이 준다 (simulation.ts와 같은 값).
+  const demandMult = demandMultiplier(engine.mapKey, gameTimeHour, dayIndex)
 
   if (isManagementGoalDeadlineMissed({
     tickNumber,
@@ -403,7 +479,8 @@ async function runSingleEconomicTick(engine: LiveCityEngine): Promise<void> {
 
   const rng = mulberry32(engine.seed + tickNumber)
   const generated = generatePassengers(
-    engine.stations, tickNumber, demandMult, period, weekend, activeEvents, rng, waitingByOrigin,
+    engine.stations, engine.mapKey, tickNumber, gameTimeHour, dayIndex,
+    demandMult, activeEvents, rng, waitingByOrigin, engine.reachable,
   )
   for (const p of generated) {
     const passenger: EnginePassenger = {
@@ -413,6 +490,8 @@ async function runSingleEconomicTick(engine: LiveCityEngine): Promise<void> {
       type: p.type,
       createdAtTick: p.createdAtTick,
       boardedAtTick: null,
+      arrivedAtTick: null,
+      vehicleId: null,
       isNew: true,
     }
     const queue = engine.waitQueues.get(p.originStationId)
@@ -514,25 +593,45 @@ async function flushToDb(engine: LiveCityEngine): Promise<void> {
       type: p.type,
       createdAtTick: p.createdAtTick,
       boardedAtTick: p.boardedAtTick,
+      arrivedAtTick: p.arrivedAtTick,
+      vehicleId: p.vehicleId,
     }))
     engine.newPassengers = []
     await db.passenger.createMany({ data: toCreate })
-    // 방금 만든 승객은 이제 DB에 있으므로, 이후 탑승은 boardedExisting 경로로 잡혀야 한다.
+    // 방금 만든 승객은 이제 DB에 있으므로, 이후 탑승·하차는 *Existing 경로로 잡혀야 한다.
     for (const queue of engine.waitQueues.values()) {
       for (const p of queue) if (p.isNew) p.isNew = false
+    }
+    for (const riding of engine.onboard.values()) {
+      for (const p of riding) if (p.isNew) p.isNew = false
     }
   }
 
   if (engine.boardedExisting.size > 0) {
+    // 같은 (틱, 차량)끼리 묶어 updateMany 횟수를 줄인다.
+    const groups = new Map<string, { tick: number; vehicleId: string; ids: string[] }>()
+    for (const [id, { tick, vehicleId }] of engine.boardedExisting) {
+      const key = `${tick}|${vehicleId}`
+      const group = groups.get(key) ?? { tick, vehicleId, ids: [] }
+      group.ids.push(id)
+      groups.set(key, group)
+    }
+    engine.boardedExisting.clear()
+    await Promise.all([...groups.values()].map(({ tick, vehicleId, ids }) =>
+      db.passenger.updateMany({ where: { id: { in: ids } }, data: { boardedAtTick: tick, vehicleId } }),
+    ))
+  }
+
+  if (engine.arrivedExisting.size > 0) {
     const byTick = new Map<number, string[]>()
-    for (const [id, tick] of engine.boardedExisting) {
+    for (const [id, tick] of engine.arrivedExisting) {
       const list = byTick.get(tick) ?? []
       list.push(id)
       byTick.set(tick, list)
     }
-    engine.boardedExisting.clear()
+    engine.arrivedExisting.clear()
     await Promise.all([...byTick.entries()].map(([tick, ids]) =>
-      db.passenger.updateMany({ where: { id: { in: ids } }, data: { boardedAtTick: tick } }),
+      db.passenger.updateMany({ where: { id: { in: ids } }, data: { arrivedAtTick: tick, vehicleId: null } }),
     ))
   }
 
