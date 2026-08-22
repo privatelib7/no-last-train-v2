@@ -4,6 +4,11 @@ import LicensesPage from './LicensesPage'
 import { unlockBgm } from '../lib/bgm'
 import { applyTheme, loadSettings, saveSettings, type GameSettings } from '../lib/settings'
 import { playGoalUnlockSfx } from '../lib/sfx'
+import {
+  getChromeNotificationStatus,
+  requestChromeNotificationPermission,
+  type ChromeNotificationStatus,
+} from '../lib/notifications'
 
 interface Props {
   onBack: () => void
@@ -13,6 +18,9 @@ export default function SettingsPage({ onBack }: Props) {
   const [settings, setSettings] = useState<GameSettings>(() => loadSettings())
   // 설정 안에서만 오가는 화면이라 App의 페이지 상태 대신 여기서 관리한다.
   const [view, setView] = useState<'settings' | 'licenses'>('settings')
+  const [notificationStatus, setNotificationStatus] = useState<ChromeNotificationStatus>(
+    () => getChromeNotificationStatus(),
+  )
   const sfxPreviewTimer = useRef<number | null>(null)
 
   const previewSfx = () => {
@@ -34,6 +42,16 @@ export default function SettingsPage({ onBack }: Props) {
       return next
     })
     if (options?.previewSfx) previewSfx()
+  }
+
+  const toggleNotifications = async (enabled: boolean) => {
+    if (!enabled) {
+      update({ notificationsEnabled: false })
+      return
+    }
+    const status = await requestChromeNotificationPermission()
+    setNotificationStatus(status)
+    update({ notificationsEnabled: status === 'granted' })
   }
 
   if (view === 'licenses') return <LicensesPage onBack={() => setView('settings')} />
@@ -126,6 +144,33 @@ export default function SettingsPage({ onBack }: Props) {
               aria-label="효과음 음량"
             />
           </div>
+        </div>
+
+        <div className={styles.section}>
+          <span className={styles.sectionTitle}>알림</span>
+
+          <label className={styles.row}>
+            <span className={styles.rowLabel}>
+              <span className={styles.rowTitle}>크롬 알림</span>
+              <span className={styles.rowHint}>
+                {notificationStatus === 'unsupported'
+                  ? '이 브라우저에서는 알림을 지원하지 않아요.'
+                  : notificationStatus === 'denied'
+                    ? 'Chrome 사이트 설정에서 알림 권한을 허용해주세요.'
+                    : '목표 달성, 게임 오버 위험, 게임 오버, 동료 접속을 알려드려요.'}
+              </span>
+            </span>
+            <span className={styles.switch}>
+              <input
+                type="checkbox"
+                checked={settings.notificationsEnabled && notificationStatus === 'granted'}
+                disabled={notificationStatus === 'unsupported' || notificationStatus === 'denied'}
+                onChange={(e) => { void toggleNotifications(e.target.checked) }}
+                aria-label="크롬 알림 켜기/끄기"
+              />
+              <span className={styles.switchTrack} />
+            </span>
+          </label>
         </div>
 
         <div className={styles.section}>

@@ -76,6 +76,8 @@ export type GameCity = {
   goalLevel: number
   goalDeadlineDay: number
   goalsCompleted: number
+  maxGoalLevel: number
+  finalGoalReached: boolean
   happiness: number
   score: number
   insolvencyTicks: number
@@ -131,6 +133,7 @@ export type CityState = {
     gameOverGraceTicks: number
     goalRewardCash: number
     farePerPassenger: number
+    operatingCostMultiplier: number
   }
 }
 

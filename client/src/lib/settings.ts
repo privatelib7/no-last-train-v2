@@ -6,6 +6,7 @@ export interface GameSettings {
   bgmVolume: number // 0-100
   sfxEnabled: boolean
   sfxVolume: number // 0-100
+  notificationsEnabled: boolean
 }
 
 const SETTINGS_KEY = 'nlt.settings'
@@ -16,6 +17,7 @@ const DEFAULT_SETTINGS: GameSettings = {
   bgmVolume: 70,
   sfxEnabled: true,
   sfxVolume: 80,
+  notificationsEnabled: false,
 }
 
 export function loadSettings(): GameSettings {

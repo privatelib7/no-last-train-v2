@@ -19,7 +19,7 @@ import type { AuthSession } from '../api/auth'
 import { updateRoomTitle } from '../api/cities'
 import { leaveCursor, syncCursor, type RemoteCursor } from '../api/cursors'
 import { connectRealtime } from '../api/realtime'
-import { notifyEmergency } from '../lib/notifications'
+import { newlyJoinedPlayers, notifyEmergency } from '../lib/notifications'
 import { playGoalUnlockSfx } from '../lib/sfx'
 import InviteModal from './InviteModal'
 import CitySettingsModal from './CitySettingsModal'
@@ -230,6 +230,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const [errorLeaving, setErrorLeaving] = useState(false)
   const [successToast, setSuccessToast] = useState<string | null>(null)
   const [successLeaving, setSuccessLeaving] = useState(false)
+  const goalProgressCityRef = useRef<string | null>(null)
   const prevGoalsCompletedRef = useRef<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [hudSample, setHudSample] = useState<HudSample>({ continuousTick: 0, waitingPassengers: 0 })
@@ -276,6 +277,8 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const cashEmergencyRef = useRef(false)
   const gameOverRiskRef = useRef(false)
   const gameOverFiredRef = useRef(false)
+  const presenceBaselineReadyRef = useRef(false)
+  const knownRemotePlayerIdsRef = useRef<Set<string>>(new Set())
   /** 서버 /motion 스냅샷 — LiveTransitLayer가 읽어 차량 좌표를 그린다 */
   const motionRef = useRef<CityMotionSnapshot | null>(null)
   const motionClockOffsetRef = useRef(0)
@@ -330,13 +333,25 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   useEffect(() => {
     if (!state) return
     const completed = state.city.goalsCompleted
+    if (goalProgressCityRef.current !== state.city.id) {
+      goalProgressCityRef.current = state.city.id
+      prevGoalsCompletedRef.current = completed
+      return
+    }
     const prev = prevGoalsCompletedRef.current
     prevGoalsCompletedRef.current = completed
     if (prev === null || completed <= prev) return
     setSuccessToast(`${completed}단계 목표 달성 완료!`)
     setSuccessLeaving(false)
     playGoalUnlockSfx()
-  }, [state?.city.id, state?.city.goalsCompleted])
+    void notifyEmergency(
+      `${state.city.roomTitle} — 목표 달성`,
+      state.city.finalGoalReached
+        ? `${completed}단계 최종 경영 목표를 달성했습니다.`
+        : `${completed}단계 목표를 달성했습니다. 다음 목표가 시작됩니다.`,
+      `nlt-goal-${state.city.id}-${completed}`,
+    )
+  }, [state])
 
   useEffect(() => {
     if (!successToast) {
@@ -613,6 +628,8 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   useEffect(() => {
     const token = session?.token
     if (!token) return
+    presenceBaselineReadyRef.current = false
+    knownRemotePlayerIdsRef.current = new Set()
     let cancelled = false
     let inflight = false
     let lastSentAt = 0
@@ -633,6 +650,20 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
         if (cancelled) return
         lastSentAt = Date.now()
         cursorLastSentRef.current = { x, y }
+        const nextPlayerIds = new Set(result.cursors.map(cursor => cursor.playerId))
+        if (!presenceBaselineReadyRef.current) {
+          // 첫 동기화에 이미 있던 사람은 "방금 접속"한 것이 아니므로 기준선만 세운다.
+          presenceBaselineReadyRef.current = true
+        } else {
+          for (const cursor of newlyJoinedPlayers(knownRemotePlayerIdsRef.current, result.cursors)) {
+            void notifyEmergency(
+              `${stateRef.current?.city.roomTitle ?? '관제실'} — 동료 접속`,
+              `${cursor.nickname}님이 관제실에 접속했습니다.`,
+              `nlt-player-${cityId}-${cursor.playerId}`,
+            )
+          }
+        }
+        knownRemotePlayerIdsRef.current = nextPlayerIds
         setRemoteCursors(prev => {
           const next = result.cursors
           if (
@@ -660,6 +691,8 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       window.clearInterval(timer)
       cursorPosRef.current = null
       cursorLastSentRef.current = null
+      presenceBaselineReadyRef.current = false
+      knownRemotePlayerIdsRef.current = new Set()
       setRemoteCursors([])
       void leaveCursor(cityId, token)
     }
@@ -781,6 +814,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   }
 
   // 응급 상황(운영자금 마이너스 · 파산·행복도 위험 · 게임오버) 진입 순간에만 한 번씩 크롬 알림을 띄운다.
+  // 목표 달성은 위 목표 effect, 동료 접속은 커서 프레즌스 동기화에서 별도 처리한다.
   // 도시를 새로 열었을 때 이미 위험한 상태였다면 그건 "방금 벌어진 일"이 아니므로 기준선만 세우고 알리지 않는다.
   useEffect(() => {
     if (!state) return
@@ -1499,6 +1533,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     ? Math.min(100, (state.city.totalRevenue / state.city.revenueGoal) * 100)
     : 0
   const goalJustReached = state.city.goalsCompleted > 0 && state.city.goalReachedAtTick === currentTick
+  const difficultyMultiplier = state.economyRules.operatingCostMultiplier
   const goalDaysRemaining = state.city.goalDeadlineDay - currentGameDay
   const goalDeadlineStatus = goalDaysRemaining > 0
     ? `D-${goalDaysRemaining}`
@@ -1642,26 +1677,36 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
 
         <div className={`${styles.liveStatus} ${goalJustReached ? styles.goalLiveStatus : ''} ${isGameOver ? styles.stoppedStatus : ''}`}>
           <span className={styles.liveDot} />
-          <b>{isGameOver ? '경영 종료' : goalJustReached ? `${state.city.goalsCompleted}개 목표 완료 · 새 목표 시작` : `${state.city.goalLevel}단계 목표 진행 중`}</b>
+          <b>{isGameOver
+            ? '경영 종료'
+            : state.city.finalGoalReached
+              ? `최종 ${state.city.maxGoalLevel}단계 목표 완료`
+              : goalJustReached
+                ? `${state.city.goalsCompleted}개 목표 완료 · 새 목표 시작`
+                : `${state.city.goalLevel}단계 목표 진행 중`}</b>
         </div>
 
         <section className={`${styles.controlSection} ${styles.goalSection}`}>
           <div className={styles.sectionHeading}><span>★</span><h2>이번 경영 목표</h2></div>
           <div className={`${styles.goalCard} ${goalJustReached ? styles.goalCardReached : ''}`}>
             <div className={styles.goalCardTop}>
-              <span>{state.city.goalLevel}단계 · {state.city.goalDeadlineDay}일차까지</span>
+              <span>{state.city.finalGoalReached
+                ? `최종 ${state.city.maxGoalLevel}단계 · 난이도 ×${difficultyMultiplier.toFixed(2)}`
+                : `${state.city.goalLevel}단계 · ${state.city.goalDeadlineDay}일차까지 · 난이도 ×${difficultyMultiplier.toFixed(2)}`}</span>
               <b>{formatMoney(state.city.totalRevenue)} <small>/ {formatMoney(state.city.revenueGoal)}</small></b>
             </div>
             <div className={`${styles.goalMeta} ${goalDaysRemaining < 0 ? styles.goalMetaOverdue : ''}`}>
               <span>현재 {currentGameDay}일차</span>
-              <b>{goalDeadlineStatus}</b>
+              <b>{state.city.finalGoalReached ? '완료' : goalDeadlineStatus}</b>
               <span>완료 {state.city.goalsCompleted}개</span>
             </div>
             <div className={styles.progressTrack} aria-label={`매출 목표 ${Math.round(goalProgress)}%`}>
               <i style={{ width: `${goalProgress}%` }} />
             </div>
-            <p>{goalJustReached
-              ? '이전 목표 보상을 지급하고 더 높은 다음 목표를 설정했습니다.'
+            <p>{state.city.finalGoalReached
+              ? '모든 경영 목표를 달성했습니다. 최종 관제 기록을 계속 확장할 수 있습니다.'
+              : goalJustReached
+                ? '이전 목표 보상을 지급하고 더 높은 다음 목표를 설정했습니다.'
               : goalDaysRemaining < 0
                 ? '기한 안에 매출 목표를 달성하지 못해 경영이 종료되었습니다.'
                 : `기한 안에 목표를 달성하면 지원금 ${formatMoney(state.economyRules.goalRewardCash)}과 8,000점을 받고 다음 목표가 열립니다.`}</p>
