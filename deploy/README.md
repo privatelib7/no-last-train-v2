@@ -342,7 +342,7 @@ pm2 logs nlt-server --lines 100  # API 로그
 pm2 logs nlt-realtime            # 실시간 서버 로그
 pm2 restart nlt-server
 
-cd ~/no-last-train && ./deploy/publish.sh --pull   # 최신 코드로 재배포
+cd ~/no-last-train && ./deploy/publish.sh --pull   # 최신 코드로 손수 재배포
 
 sudo docker ps                                     # DB · Redis 상태
 sudo docker exec -it nlt-postgres psql -U nlt no_last_train
@@ -359,6 +359,80 @@ sudo docker exec nlt-postgres pg_dump -U nlt no_last_train | gzip > ~/nlt-$(date
 ```bash
 gunzip -c ~/nlt-2026-08-19.sql.gz | sudo docker exec -i nlt-postgres psql -U nlt no_last_train
 ```
+
+## 자동 배포 (main 에 머지되면 배포)
+
+프로덕션 체크아웃이 `origin/main` 을 주기적으로 확인해, 새 커밋이 있으면
+`publish.sh` 를 돌린다. systemd 타이머 하나가 전부라 인바운드 포트도, 저장소
+시크릿도, 러너도 필요 없다.
+
+> GitHub Actions 에서 서버로 미는 방식(셀프호스티드 러너 · 웹훅)은 저장소
+> **관리자** 권한이 있어야 한다. 권한이 없거나 인바운드가 막힌 머신에서는
+> 이 폴링 방식을 쓴다.
+
+### 1. 배포 전용 체크아웃
+
+자동 배포는 `git reset --hard origin/main` 으로 코드를 맞춘다. 개발용 체크아웃에서
+돌리면 작업 중인 변경이 날아가므로 배포 전용 워크트리를 따로 둔다.
+
+```bash
+git -C ~/no-last-train worktree add --detach ~/nlt-prod origin/main
+cp ~/no-last-train/server/.env        ~/nlt-prod/server/.env
+cp ~/no-last-train/deploy/.env.deploy ~/nlt-prod/deploy/.env.deploy
+cd ~/nlt-prod && ./deploy/publish.sh          # PM2 를 새 경로로 옮긴다
+```
+
+`ecosystem.config.cjs` 는 경로를 `__dirname` 기준으로 잡으므로, 새 체크아웃에서
+`publish.sh` 를 한 번 돌리면 PM2 가 그쪽을 바라본다. `pm2 save` 까지 스크립트가 한다.
+
+### 2. 타이머 설치
+
+```bash
+cd ~/nlt-prod
+./deploy/install-auto-deploy.sh                  # 1 분마다 확인
+./deploy/install-auto-deploy.sh --interval 5min  # 간격 변경
+```
+
+`/etc/systemd/system/nlt-auto-deploy.{service,timer}` 를 만들고 타이머를 켠다.
+간격을 바꿀 때는 유닛 파일을 직접 고치지 말고 `--interval` 로 다시 실행한다.
+
+### 동작
+
+1. `git fetch origin main`
+2. `HEAD` 와 `FETCH_HEAD` 가 같으면 아무것도 하지 않고 끝난다 (로그도 남기지 않는다)
+3. 다르면 `git reset --hard` 후 `publish.sh` — 설치 · 빌드 · 정적 동기화 · PM2 reload · 헬스 체크
+4. 헬스 체크가 실패하면 유닛이 `failed` 로 남는다
+
+타이머는 앞 회차가 **끝난 뒤**부터 간격을 세고 스크립트도 `flock` 으로 잠그므로
+배포끼리 겹치지 않는다. 한 번 배포에 보통 2~3 분 걸린다.
+
+`git fetch` 는 `gh auth git-credential` 로 인증한다. 토큰이 풀리면 배포가 멈추므로
+`journalctl` 에 fetch 실패가 보이면 `gh auth status` 를 확인한다.
+
+### 확인 · 조작
+
+```bash
+journalctl -u nlt-auto-deploy -f                    # 배포 로그
+systemctl list-timers nlt-auto-deploy.timer         # 다음 실행 시각
+sudo systemctl start nlt-auto-deploy.service        # 기다리지 않고 지금 배포
+sudo systemctl stop  nlt-auto-deploy.timer          # 잠시 멈춤 (재부팅하면 다시 켜진다)
+./deploy/install-auto-deploy.sh --uninstall         # 완전히 제거
+
+cd ~/nlt-prod && ./deploy/auto-deploy.sh --force    # 커밋이 같아도 다시 배포
+```
+
+### 되돌리기
+
+`main` 을 되돌리면 다음 회차가 그 커밋으로 맞춘다. 이게 정공법이다.
+급할 때 서버에서 먼저 되돌리려면:
+
+```bash
+sudo systemctl stop nlt-auto-deploy.timer
+cd ~/nlt-prod && git reset --hard <되돌릴-커밋> && ./deploy/publish.sh
+```
+
+타이머를 멈추지 않으면 다음 폴링이 다시 `origin/main` 으로 끌고 간다.
+`main` 을 고친 뒤 타이머를 다시 켠다.
 
 ---
 
@@ -378,6 +452,9 @@ gunzip -c ~/nlt-2026-08-19.sql.gz | sudo docker exec -i nlt-postgres psql -U nlt
 | `route dns` 가 실패 | 그 도메인이 Cloudflare zone 이 아니거나, 같은 이름의 레코드가 이미 있다 |
 | A1 생성이 계속 실패 | 용량은 수시로 바뀐다. 간격을 늘려(`--retry-interval 300` 이상) 길게 돌리거나, OCPU 를 줄이거나(`--ocpus 1 --memory 6`), `VM.Standard.E2.1.Micro` 로 시작한다 |
 | `TooManyRequests`(429) | 생성 요청이 잦았다. 스크립트가 `--throttle-wait` 만큼 쉬고 이어간다 |
+| main 에 머지했는데 배포가 안 됨 | `systemctl list-timers nlt-auto-deploy.timer` 로 타이머가 켜져 있는지, `journalctl -u nlt-auto-deploy -n 50` 으로 fetch·빌드 실패가 있는지 |
+| 자동 배포가 `git fetch` 에서 실패 | `gh auth status` — `gh auth git-credential` 토큰이 풀렸다. `gh auth login` 후 `sudo systemctl start nlt-auto-deploy.service` |
+| 배포는 됐는데 옛 코드가 보임 | 브라우저 캐시가 아니라면 `cd ~/nlt-prod && git log --oneline -1` 로 실제 배포된 커밋을 확인한다 |
 
 ## 부록: OCI CLI 로 인스턴스 만들기
 
@@ -459,6 +536,8 @@ A1 은 리전에 따라 몇 시간~며칠씩 용량이 없을 수 있다. 도쿄
 | `oci-create-instance.sh` | OCI CLI 로 네트워크·인스턴스 생성 (용량 부족 자동 재시도) |
 | `bootstrap.sh` | 서버 최초 셋업 (패키지 · DB · .env · 방화벽 · nginx). `--http-port` · `--skip-firewall` 지원 |
 | `publish.sh` | 빌드 → 정적 파일 동기화 → PM2 재시작 → 헬스 체크 |
+| `auto-deploy.sh` | `origin/main` 폴링 → 새 커밋이면 `publish.sh` (systemd 타이머가 실행) |
+| `install-auto-deploy.sh` | 자동 배포 타이머 설치 · 제거 (`--interval`, `--uninstall`) |
 | `setup-https.sh` | Let's Encrypt 인증서 발급 · https 전환 (경로 A) |
 | `cloudflare-tunnel.sh` | Cloudflare Tunnel 생성 · DNS 등록 · systemd 등록 (경로 B) |
 | `ecosystem.config.cjs` | PM2 프로세스 정의 (`nlt-server`, `nlt-realtime`) |

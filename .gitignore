@@ -28,6 +28,8 @@ deploy/*
 !deploy/bootstrap.sh
 !deploy/oci-create-instance.sh
 !deploy/publish.sh
+!deploy/auto-deploy.sh
+!deploy/install-auto-deploy.sh
 !deploy/setup-https.sh
 !deploy/cloudflare-tunnel.sh
 !deploy/ecosystem.config.cjs

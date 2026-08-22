@@ -1,6 +1,12 @@
 import { db } from './db'
 import { evaluatePolicies } from './policy-engine'
-import { calculateTickEconomy, isManagementGoalDeadlineMissed, resolveManagementGoal } from './economy'
+import {
+  MAX_MANAGEMENT_LEVEL,
+  calculateTickEconomy,
+  isFinalManagementGoalReached,
+  isManagementGoalDeadlineMissed,
+  resolveManagementGoal,
+} from './economy'
 import { advanceVehicleMotion, expressStopStationIds, stationDwellMinutes } from './vehicle-motion'
 import { isVehicleInService } from './vehicle-service'
 import { calcServiceScore } from './service-score'
@@ -168,7 +174,9 @@ async function simulateTicksUnlocked(cityId: string, count: number): Promise<Sim
   let revenueGoal = city.revenueGoal
   const initialGoal = resolveManagementGoal(city.revenueGoal, city.goalReachedAtTick)
   let goalLevel = initialGoal.level
-  let goalsCompleted = initialGoal.level - 1
+  let goalsCompleted = isFinalManagementGoalReached(city.revenueGoal, city.totalRevenue)
+    ? MAX_MANAGEMENT_LEVEL
+    : initialGoal.level - 1
   let happiness = city.happiness
   let score = city.score
   let insolvencyTicks = city.insolvencyTicks
@@ -309,7 +317,9 @@ async function simulateTicksUnlocked(cityId: string, count: number): Promise<Sim
         tickNumber,
         gameTimeHour,
         type: 'GOAL',
-        description: `${economy.completedGoalLevel}단계 경영 목표를 달성해 지원금 ₵5,000을 받고 ${economy.goalLevel}단계 목표가 설정되었습니다.`,
+        description: economy.finalGoalReached
+          ? `${economy.completedGoalLevel}단계 최종 경영 목표를 달성했습니다.`
+          : `${economy.completedGoalLevel}단계 경영 목표를 달성해 지원금 ₵5,000을 받고 ${economy.goalLevel}단계 목표가 설정되었습니다.`,
         severity: 'INFO',
       })
     }
