@@ -66,6 +66,14 @@ function orderedStations(line: GameLine) {
   return line.lineStations.slice().sort((a, b) => a.order - b.order).map(item => item.station)
 }
 
+/** 서버와 같은 급행 정차 규칙: 한 역씩 통과하되 2개 역마다, 그리고 종점에는 정차한다. */
+function expressStopStationIds(stations: Station[]): Set<string> {
+  const ids = new Set<string>()
+  for (let i = 0; i < stations.length; i += 2) ids.add(stations[i].id)
+  if (stations.length > 0) ids.add(stations[stations.length - 1].id)
+  return ids
+}
+
 export function depotTerminusOf(line: GameLine): Station | null {
   const stations = orderedStations(line)
   if (stations.length === 0) return null
@@ -114,6 +122,7 @@ export function locateVehicle(
   const rules = resolvePhysics(physics)
   const stations = orderedStations(line)
   const terminus = depotTerminusOf(line)
+  const expressStops = vehicle.isExpress ? expressStopStationIds(stations) : null
 
   // 차고지 대기: 맵 밖이 아니라 depot 좌표에 세워 둔다
   if (vehicle.isSpare || vehicle.status === 'SPARE' || !vehicle.currentStationId) {
@@ -220,8 +229,10 @@ export function locateVehicle(
     remainingMinutes -= minutesToArrival
     currentIndex = next.nextIndex
     segmentProgressMinutes = 0
+    const arrivedStation = stations[currentIndex]
+    if (expressStops && !expressStops.has(arrivedStation.id)) continue
     dwellRemainingMinutes = stationDwellMinutes(line.mode, rules)
-    arrivedStationIds.push(stations[currentIndex].id)
+    arrivedStationIds.push(arrivedStation.id)
     if (remainingMinutes === 0) break
   }
 
