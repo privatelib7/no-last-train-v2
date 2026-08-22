@@ -6,6 +6,7 @@ import { isVehicleInService } from './vehicle-service'
 // 실패해 도시가 그대로 멈춰버린다. 실제로 두 도시가 이 한도(cashBalance, 그리고
 // 목표 단계가 올라가며 2차식으로 커지는 revenueGoal)에 부딪혀 멈춘 적이 있다.
 const MAX_SAFE_ECONOMY_VALUE = 2_000_000_000
+export const MAX_MANAGEMENT_LEVEL = 20
 
 export const ECONOMY = {
   INITIAL_CASH: 350_000_000,
@@ -76,6 +77,7 @@ export type TickEconomyResult = {
   goalReachedAtTick: number | null
   goalReachedNow: boolean
   completedGoalLevel: number | null
+  finalGoalReached: boolean
   gameOverReason: 'BANKRUPT' | 'HAPPINESS' | 'GOAL_DEADLINE' | null
 }
 
@@ -85,10 +87,30 @@ export type ManagementGoal = {
   deadlineDay: number
 }
 
+export type ProgressionDifficulty = {
+  level: number
+  farePerPassenger: number
+  operatingCostMultiplier: number
+}
+
+// 초반 조작을 익히는 동안은 기존 밸런스를 유지하고, 단계가 오를수록 같은 수송량으로
+// 얻는 매출은 줄고 운영비는 늘어난다. 승객 수 자체를 늘리면 오히려 목표 매출을 더 빨리
+// 채우므로, 수요가 아니라 수익/비용 쪽을 조정해 자동 레벨업을 늦춘다.
+export function progressionDifficultyForLevel(level: number): ProgressionDifficulty {
+  const safeLevel = Math.max(1, Math.min(MAX_MANAGEMENT_LEVEL, Math.floor(level)))
+  const fareMultiplier = Math.max(0.5, 1 - (safeLevel - 1) * 0.025)
+  const operatingCostMultiplier = Math.min(2, 1 + (safeLevel - 1) * 0.05)
+  return {
+    level: safeLevel,
+    farePerPassenger: Math.round(ECONOMY.FARE_PER_PASSENGER * fareMultiplier / 100) * 100,
+    operatingCostMultiplier,
+  }
+}
+
 // 목표는 누적 매출 기준으로 커지고, 달성 기한도 단계마다 4일, 5일, 6일…씩 넓어진다.
 // 1단계 3,200만/3일 → 2단계 7,200만/7일 → 3단계 1억 2,000만/12일.
 export function managementGoalForLevel(level: number): ManagementGoal {
-  const safeLevel = Math.max(1, Math.floor(level))
+  const safeLevel = Math.max(1, Math.min(MAX_MANAGEMENT_LEVEL, Math.floor(level)))
   return {
     level: safeLevel,
     // 2차식이라 20단계 안팎에서 이미 Int 한계(약 21억)를 넘는다 — 목표가 무한히
@@ -103,10 +125,15 @@ export function resolveManagementGoal(
   lastGoalReachedAtTick: number | null,
 ): ManagementGoal {
   let level = 1
-  while (level < 100 && managementGoalForLevel(level).revenueGoal < revenueGoal) level += 1
+  while (level < MAX_MANAGEMENT_LEVEL && managementGoalForLevel(level).revenueGoal < revenueGoal) level += 1
   // 단일 목표만 있던 기존 저장 데이터는 이미 받은 1단계 보상을 중복 지급하지 않는다.
   if (level === 1 && lastGoalReachedAtTick !== null) level = 2
   return managementGoalForLevel(level)
+}
+
+export function isFinalManagementGoalReached(revenueGoal: number, totalRevenue: number): boolean {
+  const finalGoal = managementGoalForLevel(MAX_MANAGEMENT_LEVEL)
+  return revenueGoal >= finalGoal.revenueGoal && totalRevenue >= finalGoal.revenueGoal
 }
 
 export function isManagementGoalDeadlineMissed(input: {
@@ -144,8 +171,8 @@ export function vehiclePurchaseCost(mode: string): number {
   return mode === 'BUS' ? ECONOMY.BUILD_COST.BUS_VEHICLE : ECONOMY.BUILD_COST.SUBWAY_VEHICLE
 }
 
-export function calculateOperatingCost(lines: EconomyLine[]): number {
-  return lines.reduce((total, line) => {
+export function calculateOperatingCost(lines: EconomyLine[], multiplier = 1): number {
+  const baseCost = lines.reduce((total, line) => {
     if (line.status !== 'OPERATING') return total
     const isBus = line.mode === 'BUS'
     const lineCost = isBus
@@ -157,31 +184,47 @@ export function calculateOperatingCost(lines: EconomyLine[]): number {
       : ECONOMY.OPERATING_COST.SUBWAY_VEHICLE
     return total + lineCost + activeVehicles * vehicleCost
   }, 0)
+  return Math.round(baseCost * multiplier)
 }
 
 export function calculateTickEconomy(input: TickEconomyInput): TickEconomyResult {
-  const revenue = input.transported * ECONOMY.FARE_PER_PASSENGER
-  const operatingCost = calculateOperatingCost(input.lines)
+  const currentGoal = resolveManagementGoal(input.revenueGoal, input.goalReachedAtTick)
+  const difficulty = progressionDifficultyForLevel(currentGoal.level)
+  const revenue = input.transported * difficulty.farePerPassenger
+  const operatingCost = calculateOperatingCost(input.lines, difficulty.operatingCostMultiplier)
   const totalRevenue = Math.min(input.totalRevenue + revenue, MAX_SAFE_ECONOMY_VALUE)
 
-  const currentGoal = resolveManagementGoal(input.revenueGoal, input.goalReachedAtTick)
   let goalLevel = currentGoal.level
   let goalsCompleted = goalLevel - 1
   let revenueGoal = currentGoal.revenueGoal
   let goalDeadlineDay = currentGoal.deadlineDay
 
-  const completedGoalLevel = totalRevenue >= revenueGoal ? goalLevel : null
+  const finalGoalWasAlreadyReached = goalLevel === MAX_MANAGEMENT_LEVEL
+    && input.totalRevenue >= revenueGoal
+  const crossedGoalThisTick = input.totalRevenue < revenueGoal && totalRevenue >= revenueGoal
+  // 이전 버전에서 목표값과 누적 매출만 저장된 채 중단된 1단계 도시는 한 번 복구한다.
+  const recoverUnrecordedFirstGoal = goalLevel === 1
+    && input.goalReachedAtTick === null
+    && totalRevenue >= revenueGoal
+  const completedGoalLevel = !finalGoalWasAlreadyReached && (crossedGoalThisTick || recoverUnrecordedFirstGoal)
+    ? goalLevel
+    : null
   const goalReachedNow = completedGoalLevel !== null
   const goalReward = goalReachedNow ? ECONOMY.GOAL_REWARD_CASH : 0
   const cashBalance = Math.min(input.cashBalance + revenue - operatingCost + goalReward, MAX_SAFE_ECONOMY_VALUE)
 
   if (goalReachedNow) {
     goalsCompleted += 1
-    goalLevel += 1
-    const nextGoal = managementGoalForLevel(goalLevel)
-    revenueGoal = nextGoal.revenueGoal
-    goalDeadlineDay = nextGoal.deadlineDay
+    if (goalLevel < MAX_MANAGEMENT_LEVEL) {
+      goalLevel += 1
+      const nextGoal = managementGoalForLevel(goalLevel)
+      revenueGoal = nextGoal.revenueGoal
+      goalDeadlineDay = nextGoal.deadlineDay
+    }
   }
+  const finalGoalReached = finalGoalWasAlreadyReached
+    || (goalReachedNow && completedGoalLevel === MAX_MANAGEMENT_LEVEL)
+  if (finalGoalReached) goalsCompleted = MAX_MANAGEMENT_LEVEL
 
   // 행복도는 서비스 품질을 천천히 따라간다. 최악의 상황에서도 틱당 0.25만 하락한다.
   const happinessDelta = clamp((input.serviceScore - input.happiness) * 0.02, -0.25, 0.18)
@@ -220,6 +263,7 @@ export function calculateTickEconomy(input: TickEconomyInput): TickEconomyResult
     goalReachedAtTick: goalReachedNow ? input.tickNumber : input.goalReachedAtTick,
     goalReachedNow,
     completedGoalLevel,
+    finalGoalReached,
     gameOverReason,
   }
 }
