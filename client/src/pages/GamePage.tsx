@@ -2346,11 +2346,6 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                       <circle r="0.68" className={styles.stationNode} />
                     </>
                   )}
-                  {isDepotTerminus && (
-                    <text y="2.7" textAnchor="middle" className={styles.depotTerminusLabel}>
-                      {depotLabel}
-                    </text>
-                  )}
                 </g>
               )
             })}
