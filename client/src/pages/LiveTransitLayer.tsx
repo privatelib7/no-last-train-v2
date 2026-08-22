@@ -24,7 +24,6 @@ const CLOCK_CATCHUP_MULTIPLIER = 1.15
 const VEHICLE_SCALE = 0.62
 const EARNINGS_FLASH_DURATION_MS = 1600
 const EARNINGS_FLASH_RISE_UNITS = 3.5
-const FRAME_MS = 33
 const HUD_SAMPLE_MS = 500
 
 const LINE_COLORS: Record<string, string> = {
@@ -129,29 +128,27 @@ function LiveTransitLayer({
 
   useEffect(() => {
     let animationFrame = 0
-    let lastPaint = 0
-    const animate = (now: number) => {
-      if (now - lastPaint >= FRAME_MS) {
-        lastPaint = now
-        const wallNow = Date.now()
-        if (visualTickRef.current != null && lastClockWallRef.current != null) {
-          const dtMs = Math.max(0, wallNow - lastClockWallRef.current)
-          let nextTick = visualTickRef.current + dtMs / LIVE_TICK_MS
-          const drive = motionDriveRef.current
-          if (drive && city.status === 'ACTIVE') {
-            const serverNow = wallNow + motionClockOffsetRef.current
-            const anchorTick = drive.baseSyncTick
-              + Math.max(0, (serverNow - drive.baseServerNow) / drive.liveTickMs)
-            if (anchorTick > nextTick) {
-              const maxAdvance = (dtMs / LIVE_TICK_MS) * CLOCK_CATCHUP_MULTIPLIER
-              nextTick = Math.min(anchorTick, visualTickRef.current + maxAdvance)
-            }
+    const animate = () => {
+      // rAF 자체가 모니터 주사율에 맞춰 호출된다. 예전 33ms 제한(약 30fps)은
+      // 60Hz 이상 화면에서 차량이 한 프레임씩 건너뛰어 보이는 원인이었다.
+      const wallNow = Date.now()
+      if (visualTickRef.current != null && lastClockWallRef.current != null) {
+        const dtMs = Math.max(0, wallNow - lastClockWallRef.current)
+        let nextTick = visualTickRef.current + dtMs / LIVE_TICK_MS
+        const drive = motionDriveRef.current
+        if (drive && city.status === 'ACTIVE') {
+          const serverNow = wallNow + motionClockOffsetRef.current
+          const anchorTick = drive.baseSyncTick
+            + Math.max(0, (serverNow - drive.baseServerNow) / drive.liveTickMs)
+          if (anchorTick > nextTick) {
+            const maxAdvance = (dtMs / LIVE_TICK_MS) * CLOCK_CATCHUP_MULTIPLIER
+            nextTick = Math.min(anchorTick, visualTickRef.current + maxAdvance)
           }
-          visualTickRef.current = nextTick
         }
-        lastClockWallRef.current = wallNow
-        setClockNowMs(wallNow)
+        visualTickRef.current = nextTick
       }
+      lastClockWallRef.current = wallNow
+      setClockNowMs(wallNow)
       animationFrame = window.requestAnimationFrame(animate)
     }
     animationFrame = window.requestAnimationFrame(animate)
@@ -168,6 +165,12 @@ function LiveTransitLayer({
     ?? (gameMinutesPerTick / (liveTickMs / 1000))
   const motionPhysics = motionDrive?.physics ?? motionSnap?.physics ?? null
   const serverNowMs = clockNowMs + motionClockOffsetRef.current
+  // 서버 좌표는 100ms 간격의 샘플이다. 마지막 샘플의 모션 상태를 현재 프레임까지
+  // 동일한 물리식으로 투영해, 두 WebSocket 메시지 사이에도 위치가 매 rAF마다 변하게 한다.
+  // 연결이 잠깐 늦어져도 열차가 마지막 목표에서 멈춰 기다리지 않고 계속 운행한다.
+  const motionProjectionMinutes = motionSnap && city.status === 'ACTIVE' && !motionDrive?.catchingUp
+    ? Math.max(0, (serverNowMs - motionSnap.serverNow) / 1000) * gameMinutesPerWallSecond
+    : 0
   const localSyncTick = motionDrive && city.status === 'ACTIVE'
     ? motionDrive.baseSyncTick + Math.max(0, (serverNowMs - motionDrive.baseServerNow) / liveTickMs)
     : currentTick
@@ -208,22 +211,32 @@ function LiveTransitLayer({
       const synced = motionVehicleById.get(vehicle.id)
       let located: RenderedVehicleMotion
       if (synced && synced.x != null && synced.y != null) {
-        const fromStation = synced.fromStationId ? stationById.get(synced.fromStationId) ?? null : null
-        const toStation = synced.toStationId ? stationById.get(synced.toStationId) ?? null : null
-        located = {
-          fromStation,
-          toStation,
-          arrivedStationIds: synced.isDwelling && synced.fromStationId ? [synced.fromStationId] : [],
+        const projected = locateVehicle(line, {
+          ...vehicle,
+          currentStationId: synced.fromStationId ?? synced.currentStationId,
           direction: synced.direction,
-          segmentDurationMinutes: synced.segmentDurationMinutes,
-          segmentProgressMinutes: synced.renderSegmentProgressMinutes,
-          dwellRemainingMinutes: synced.dwellRemainingMinutes,
-          isDwelling: synced.isDwelling,
-          isPullingOut: synced.isPullingOut,
-          progress: synced.progress,
-          x: synced.x,
-          y: synced.y,
-        }
+          segmentProgressMinutes: synced.isDwelling
+            ? -synced.dwellRemainingMinutes
+            : synced.renderSegmentProgressMinutes,
+        }, line.status === 'OPERATING' ? motionProjectionMinutes : 0, motionPhysics)
+        // 노선 편집 직후처럼 서버 스냅샷의 역이 아직 현재 city topology에 없으면
+        // 투영할 수 없으므로 그 한 프레임만 권위 좌표를 그대로 사용한다.
+        located = projected.x != null && projected.y != null
+          ? projected
+          : {
+              fromStation: synced.fromStationId ? stationById.get(synced.fromStationId) ?? null : null,
+              toStation: synced.toStationId ? stationById.get(synced.toStationId) ?? null : null,
+              arrivedStationIds: synced.isDwelling && synced.fromStationId ? [synced.fromStationId] : [],
+              direction: synced.direction,
+              segmentDurationMinutes: synced.segmentDurationMinutes,
+              segmentProgressMinutes: synced.renderSegmentProgressMinutes,
+              dwellRemainingMinutes: synced.dwellRemainingMinutes,
+              isDwelling: synced.isDwelling,
+              isPullingOut: synced.isPullingOut,
+              progress: synced.progress,
+              x: synced.x,
+              y: synced.y,
+            }
       } else {
         located = locateVehicle(line, vehicle, 0, motionPhysics)
       }
