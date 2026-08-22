@@ -956,6 +956,8 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       }
       const next = await loadCity()
       if (pendingUndo) pushSegmentUndo(pendingUndo)
+      // 방금 만든 노선을 선택해 둔다 — 이어서 역을 클릭하면 새 노선이 아니라 연장이 된다
+      if (action.type === 'CREATE_CONNECTED_LINE' && result.line) selectLine(result.line.id)
       if (action.type === 'REMOVE_VEHICLE') setSelectedVehicleId('')
       if (action.type === 'RESET_CITY') {
         segmentUndoStackRef.current = []
@@ -1234,7 +1236,14 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       return
     }
 
-    // ＋로 만든(또는 플레이어 소유) 운영 노선만 이어준다. 없는 노선을 새로 만들지는 않는다.
+    // 연결에 성공하면 마지막 선택 역(B)을 자동 해제
+    const clearSelectionOnSuccess = (next: CityState | null) => {
+      if (!next) return
+      setSelectedStationId('')
+      setRenameValue('')
+    }
+
+    // ＋로 만든(또는 플레이어 소유) 운영 노선을 먼저 이어준다.
     const isPlayerOperatedLine = !!selectedLine?.playerId
     if (selectedLine && isPlayerOperatedLine && canExtendLine(selectedLine, prevSelectedId, stationId)) {
       void performAction({
@@ -1242,14 +1251,19 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
         lineId: selectedLine.id,
         fromStationId: prevSelectedId,
         toStationId: stationId,
-      }).then(next => {
-        // 연결에 성공하면 마지막 선택 역(B)을 자동 해제
-        if (next) {
-          setSelectedStationId('')
-          setRenameValue('')
-        }
-      })
+      }).then(clearSelectionOnSuccess)
+      return
     }
+
+    // 이을 노선이 없으면 두 역을 잇는 새 지하철 노선을 만든다.
+    // 역 짓기·역 옮기기 중에는 클릭 뜻이 달라지므로 건너뛴다.
+    if (stationBuildMode || moveStationMode) return
+    void performAction({
+      type: 'CREATE_CONNECTED_LINE',
+      mode: 'SUBWAY',
+      fromStationId: prevSelectedId,
+      toStationId: stationId,
+    }).then(clearSelectionOnSuccess)
   }
 
   const handleMapClick = (event: MouseEvent<SVGSVGElement>) => {
