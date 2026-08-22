@@ -16,7 +16,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "db:push": "prisma db push",
-    "db:generate": "prisma generate"
+    "db:generate": "prisma generate",
+    "data:demand": "node scripts/build-demand-profile.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -30,6 +30,8 @@ export interface StationSnapshot {
 export interface SimResult {
   ticksProcessed: number
   totalTransported: number
+  /** 목적지까지 실제로 도착한 승객 수 — 태우기만 하고 못 내려 주면 이 값이 안 오른다 */
+  totalArrived: number
   revenueEarned: number
   operatingCost: number
   peakCongestion: number
@@ -106,72 +108,24 @@ export const SIM = {
   GAME_MINUTES_PER_TICK: 10,    // 경제 집계 틱과 별개로 차량은 이 시간을 연속 이동한다
   LIVE_TICK_MS: 3000,            // 실시간 웹 운행: 3초마다 1틱
   MAX_OFFLINE_HOURS: 12,         // 오프라인 보상 최대 12시간
-  // 역마다 사람이 보이게 올리되, 적체 시 생성 감쇠로 무한 폭주는 막는다
-  BASE_PASSENGER_RATE: 8,
+  // 역마다 사람이 보이게 올리되, 적체 시 생성 감쇠로 무한 폭주는 막는다.
+  // 수요 프로필(src/lib/demand-profile.ts)의 배율이 «평균 역·평균 시간 = 1.0»이라,
+  // 손튜닝 표를 쓰던 시절(평균 0.86배 × 8)과 하루 총수요를 맞추려면 이 값이 7이다.
+  BASE_PASSENGER_RATE: 7,
   CONGESTION_DEPLOY_DEFAULT: 0.8, // 기본 혼잡 대응 임계값
 } as const
 
-export const TIME_DEMAND_MULTIPLIER: Record<number, number> = {
-  // 게임 시간대별 수요 배율
-  6: 1.2, 7: 1.7, 8: 2.1, 9: 1.7,   // 출근
-  10: 1.05, 11: 1.1, 12: 1.25,        // 낮
-  13: 1.05, 14: 0.95, 15: 0.95,
-  16: 1.25, 17: 1.7, 18: 2.1, 19: 1.6, // 퇴근
-  20: 1.25, 21: 1.0, 22: 0.6,           // 저녁
-  23: 0.35, 0: 0.2, 1: 0.12, 2: 0.1,   // 심야
-  3: 0.1, 4: 0.2, 5: 0.5,
-}
-
-// ─── 시간대·요일 기반 승객 이동 패턴 ─────────────────────────────────────
-
-export type DayPeriod = 'MORNING' | 'DAY' | 'EVENING' | 'NIGHT'
-
-export function periodOfHour(hour: number): DayPeriod {
-  const h = Math.floor(hour)
-  if (h >= 6 && h <= 9) return 'MORNING'
-  if (h >= 10 && h <= 15) return 'DAY'
-  if (h >= 16 && h <= 19) return 'EVENING'
-  return 'NIGHT'
-}
+// ─── 게임 내 달력 ────────────────────────────────────────────────────────
 
 const TICKS_PER_DAY = SIM.TICKS_PER_GAME_HOUR * SIM.GAME_HOURS_PER_DAY
 
-// 게임 내 7일 주기: 6·7일차 = 주말
+/** 게임 내 요일 — 0=월 … 6=일. 7일 주기로 6·7일차가 주말이다. */
+export function dayIndexOfTick(tick: number): number {
+  return Math.floor(tick / TICKS_PER_DAY) % 7
+}
+
 export function isWeekendTick(tick: number): boolean {
-  return Math.floor(tick / TICKS_PER_DAY) % 7 >= 5
+  return dayIndexOfTick(tick) >= 5
 }
 
-type StationTypeKey = 'RESIDENTIAL' | 'COMMERCIAL' | 'TOURIST' | 'INDUSTRIAL' | 'HUB'
-type ODTable = Record<'WEEKDAY' | 'WEEKEND', Record<DayPeriod, Record<StationTypeKey, number>>>
-
-// 승객 출발지(역 타입) 가중치 — 아침엔 주거에서 쏟아져 나오고, 저녁엔 산업/상업에서 귀가
-export const ORIGIN_WEIGHT: ODTable = {
-  WEEKDAY: {
-    MORNING: { RESIDENTIAL: 1.6, COMMERCIAL: 0.5, INDUSTRIAL: 0.4, TOURIST: 0.6, HUB: 1.0 },
-    DAY:     { RESIDENTIAL: 0.6, COMMERCIAL: 1.2, INDUSTRIAL: 0.8, TOURIST: 1.2, HUB: 1.0 },
-    EVENING: { RESIDENTIAL: 0.5, COMMERCIAL: 1.2, INDUSTRIAL: 1.5, TOURIST: 0.9, HUB: 1.2 },
-    NIGHT:   { RESIDENTIAL: 0.4, COMMERCIAL: 1.0, INDUSTRIAL: 0.3, TOURIST: 0.8, HUB: 0.7 },
-  },
-  WEEKEND: {
-    MORNING: { RESIDENTIAL: 1.0, COMMERCIAL: 0.5, INDUSTRIAL: 0.05, TOURIST: 1.0, HUB: 0.8 },
-    DAY:     { RESIDENTIAL: 0.9, COMMERCIAL: 1.4, INDUSTRIAL: 0.05, TOURIST: 1.5, HUB: 1.0 },
-    EVENING: { RESIDENTIAL: 0.7, COMMERCIAL: 1.3, INDUSTRIAL: 0.05, TOURIST: 1.3, HUB: 1.0 },
-    NIGHT:   { RESIDENTIAL: 0.5, COMMERCIAL: 0.9, INDUSTRIAL: 0.05, TOURIST: 0.7, HUB: 0.7 },
-  },
-}
-
-// 승객 목적지(역 타입) 가중치 — 아침 산업행, 저녁 주거·상업행, 밤 주거행, 주말은 산업 소멸
-export const DEST_WEIGHT: ODTable = {
-  WEEKDAY: {
-    MORNING: { RESIDENTIAL: 0.2, COMMERCIAL: 1.0, INDUSTRIAL: 2.0, TOURIST: 0.4, HUB: 1.2 },
-    DAY:     { RESIDENTIAL: 0.5, COMMERCIAL: 1.5, INDUSTRIAL: 0.8, TOURIST: 1.2, HUB: 1.0 },
-    EVENING: { RESIDENTIAL: 2.0, COMMERCIAL: 1.2, INDUSTRIAL: 0.2, TOURIST: 0.6, HUB: 1.0 },
-    NIGHT:   { RESIDENTIAL: 2.5, COMMERCIAL: 0.5, INDUSTRIAL: 0.1, TOURIST: 0.3, HUB: 0.8 },
-  },
-  WEEKEND: {
-    MORNING: { RESIDENTIAL: 0.6, COMMERCIAL: 1.5, INDUSTRIAL: 0.05, TOURIST: 1.5, HUB: 1.0 },
-    DAY:     { RESIDENTIAL: 0.6, COMMERCIAL: 1.8, INDUSTRIAL: 0.05, TOURIST: 1.8, HUB: 1.0 },
-    EVENING: { RESIDENTIAL: 1.8, COMMERCIAL: 1.0, INDUSTRIAL: 0.05, TOURIST: 0.8, HUB: 1.0 },
-    NIGHT:   { RESIDENTIAL: 2.2, COMMERCIAL: 0.5, INDUSTRIAL: 0.05, TOURIST: 0.3, HUB: 0.8 },
-  },
-}
+// 시간대·요일별 수요는 공공데이터에서 뽑은 프로필이 담당한다 → src/lib/demand-profile.ts

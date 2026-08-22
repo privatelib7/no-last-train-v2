@@ -33,6 +33,7 @@ export async function POST(
   return NextResponse.json(result ?? {
     ticksProcessed: 0,
     totalTransported: 0,
+    totalArrived: 0,
     revenueEarned: 0,
     operatingCost: 0,
     peakCongestion: 0,

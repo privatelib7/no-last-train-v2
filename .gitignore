@@ -49,5 +49,8 @@ deploy/*
 .dev.vars
 server/src/generated
 
+# 공공데이터 원본 페이지 캐시 — scripts/build-demand-profile.mjs가 다시 받을 수 있다
+server/.cache
+
 # 재배포가 제한된 오디오 에셋 — 빌드 전에 scripts/fetch-audio-assets.mjs가 내려받는다
 client/public/audio/mixkit-unlock-new-item-game-notification-254.wav

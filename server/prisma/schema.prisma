@@ -209,6 +209,7 @@ model Vehicle {
   line           Line     @relation(fields: [lineId], references: [id], onDelete: Cascade)
   currentStation Station? @relation("CurrentStation", fields: [currentStationId], references: [id])
   supports       Support[]
+  passengers     Passenger[]
 }
 
 enum VehicleStatus {
@@ -230,13 +231,18 @@ model Passenger {
   createdAtTick    Int
   boardedAtTick    Int?
   arrivedAtTick    Int?
+  // 지금 타고 있는 차량. 승차 시 채우고 목적지에서 내릴 때 비운다.
+  vehicleId        String?
 
-  originStation Station @relation(fields: [originStationId], references: [id], onDelete: Cascade)
+  originStation Station  @relation(fields: [originStationId], references: [id], onDelete: Cascade)
+  vehicle       Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
 
   @@index([cityId, arrivedAtTick])
   @@index([originStationId, boardedAtTick])
   // 대기 승객 수(역별 groupBy)를 motion 캐시 주기(400ms)로 자주 읽기 위한 인덱스
   @@index([cityId, boardedAtTick])
+  // 차량이 역에 설 때 «이 차에서 여기 내릴 사람»을 뽑기 위한 인덱스
+  @@index([vehicleId, destStationId])
 }
 
 enum PassengerType {

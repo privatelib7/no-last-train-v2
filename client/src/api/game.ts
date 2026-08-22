@@ -164,6 +164,8 @@ export type TickHighlight = {
 export type SimResult = {
   ticksProcessed: number
   totalTransported: number
+  /** 목적지까지 실제로 도착한 승객 수 (서버 SimResult와 같은 필드) */
+  totalArrived: number
   revenueEarned: number
   operatingCost: number
   peakCongestion: number

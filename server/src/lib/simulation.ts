@@ -4,8 +4,9 @@ import { calculateTickEconomy, isManagementGoalDeadlineMissed, resolveManagement
 import { advanceVehicleMotion, stationDwellMinutes } from './vehicle-motion'
 import { isVehicleInService } from './vehicle-service'
 import { calcServiceScore } from './service-score'
-import { SIM, TIME_DEMAND_MULTIPLIER, ORIGIN_WEIGHT, DEST_WEIGHT, periodOfHour, isWeekendTick } from '@/types/game'
-import type { SimResult, TickHighlight, StationSnapshot, DayPeriod } from '@/types/game'
+import { SIM, dayIndexOfTick } from '@/types/game'
+import { demandMultiplier, originWeight, destinationScore } from './demand-profile'
+import type { SimResult, TickHighlight, StationSnapshot } from '@/types/game'
 import type { Passenger, Vehicle, Station, Line, GameEvent } from '@prisma/client'
 
 // ─── 결정론적 RNG (seeded) ───────────────────────────────────────────────
@@ -145,9 +146,13 @@ async function simulateTicksUnlocked(cityId: string, count: number): Promise<Sim
     })
   }
 
+  // 노선 구성은 이 루프 안에서 바뀌지 않으므로 도달 가능 역은 한 번만 계산한다.
+  const reachable = buildReachability(city.stations, city.lines)
+
   const rng = mulberry32(city.seed + baseTick)
   const highlights: TickHighlight[] = []
   let totalTransported = 0
+  let totalArrived = 0
   let revenueEarned = 0
   let operatingCost = 0
   let peakCongestion = 0
@@ -169,11 +174,10 @@ async function simulateTicksUnlocked(cityId: string, count: number): Promise<Sim
   for (let i = 0; i < count; i++) {
     const tickNumber = baseTick + ticksProcessed + 1
     const gameTimeHour = (tickNumber / SIM.TICKS_PER_GAME_HOUR) % 24
-    const weekend = isWeekendTick(tickNumber)
-    const period = periodOfHour(gameTimeHour)
-    const baseDemand = TIME_DEMAND_MULTIPLIER[Math.floor(gameTimeHour)] ?? 1.0
-    // 주말엔 출퇴근 피크가 없음
-    const demandMult = weekend ? Math.min(baseDemand, 1.3) : baseDemand
+    const dayIndex = dayIndexOfTick(tickNumber)
+    // 시간대·요일별 수요 배율은 그 맵의 실제 지하철 승하차에서 뽑은 프로필이 준다.
+    // 주말 곡선에 출퇴근 피크가 없는 것도, 부산이 서울보다 낮에 붐비는 것도 데이터가 그래서다.
+    const demandMult = demandMultiplier(city.mapKey, gameTimeHour, dayIndex)
 
     // 마감일의 모든 틱이 끝난 뒤 다음 날로 넘어가는 순간 목표 실패를 확정한다.
     // 실패 판정 틱에서는 승객·차량·경제 상태를 더 진행하지 않는다.
@@ -219,13 +223,15 @@ async function simulateTicksUnlocked(cityId: string, count: number): Promise<Sim
     const waitingByOrigin = new Map(waitingBefore.map(row => [row.originStationId, row._count.id]))
     const newPassengers = generatePassengers(
       city.stations,
+      city.mapKey,
       tickNumber,
+      gameTimeHour,
+      dayIndex,
       demandMult,
-      period,
-      weekend,
       activeEvents,
       rng,
       waitingByOrigin,
+      reachable,
     )
     if (newPassengers.length > 0) {
       await db.passenger.createMany({ data: newPassengers })
@@ -235,8 +241,11 @@ async function simulateTicksUnlocked(cityId: string, count: number): Promise<Sim
     const stationSnapshots = await buildStationSnapshots(city.stations, cityId)
 
     // 4. 차량 이동 + 승하차
-    const transported = await moveVehiclesAndBoard(city.lines, stationSnapshots, tickNumber)
+    // 승차 수는 예전과 같은 의미로 둔다(운임 = 태운 사람). 하차 수는 별도로 센다 —
+    // 승객이 실제로 목적지에 닿았는지가 «구간이 제대로 도는가»의 지표다.
+    const { boarded: transported, arrived } = await moveVehiclesAndBoard(city.lines, stationSnapshots, tickNumber)
     totalTransported += transported
+    totalArrived += arrived
 
     // 5. AI 정책 평가 및 실행
     const serviceScore = calcServiceScore(stationSnapshots, city.lines)
@@ -340,6 +349,7 @@ async function simulateTicksUnlocked(cityId: string, count: number): Promise<Sim
   return {
     ticksProcessed,
     totalTransported,
+    totalArrived,
     revenueEarned,
     operatingCost,
     peakCongestion,
@@ -370,25 +380,24 @@ function activateEvents(events: GameEvent[], tick: number): GameEvent[] {
 
 function generatePassengers(
   stations: Station[],
+  mapKey: string,
   tick: number,
+  hour: number,
+  dayIndex: number,
   demandMult: number,
-  period: DayPeriod,
-  weekend: boolean,
   activeEvents: GameEvent[],
   rng: () => number,
   waitingByOrigin: Map<string, number>,
+  reachable: Map<string, Station[]>,
 ): Array<{
   cityId: string; originStationId: string; destStationId: string
   type: 'COMMUTER' | 'TOURIST' | 'WORKER'; createdAtTick: number
 }> {
   const passengers = []
   const eventStations = new Set(activeEvents.map(e => e.affectedStationId).filter(Boolean))
-  const dayKey = weekend ? 'WEEKEND' : 'WEEKDAY'
-  const originWeights = ORIGIN_WEIGHT[dayKey][period]
-  const destWeights = DEST_WEIGHT[dayKey][period]
 
   for (const station of stations) {
-    let rate = SIM.BASE_PASSENGER_RATE * demandMult * (originWeights[station.type] ?? 1)
+    let rate = SIM.BASE_PASSENGER_RATE * originWeight(mapKey, station.type, hour, dayIndex)
 
     if (eventStations.has(station.id)) {
       const ev = activeEvents.find(e => e.affectedStationId === station.id)
@@ -401,9 +410,13 @@ function generatePassengers(
     const congestion = Math.min(1, waiting / capacity)
     rate *= Math.max(0.4, 1 - congestion * 0.55)
 
+    // 목적지 후보와 가중치는 출발역마다 다르다(거리가 들어가므로) — 역당 한 번만 만든다.
+    const candidates = destinationCandidates(station, reachable, mapKey, hour, dayIndex)
+    if (candidates.total <= 0) continue
+
     const count = Math.round(rate * (0.7 + rng() * 0.6))  // ±30% 랜덤
     for (let i = 0; i < count; i++) {
-      const dest = pickDestination(stations, station.id, destWeights, rng)
+      const dest = pickDestination(candidates, rng)
       if (!dest) continue
       passengers.push({
         cityId: station.cityId,
@@ -417,25 +430,69 @@ function generatePassengers(
   return passengers
 }
 
-// 목적지 역 타입 가중 추첨 (출발역 제외)
-function pickDestination(
-  stations: Station[],
-  originId: string,
-  weights: Record<string, number>,
-  rng: () => number,
-): Station | null {
+type DestinationCandidates = { stations: Station[]; weights: number[]; total: number }
+
+// 목적지 후보 = «그 역에서 지하철로 갈 수 있는 역». 갈 수 없는 곳을 목적지로 주면
+// 승객이 영원히 승강장에 남아 혼잡도만 올린다. 노선이 아예 없는 역은 도시가 비어 보이지
+// 않도록 예외로 전체 역을 쓴다(어차피 태울 차량도 없다).
+function destinationCandidates(
+  origin: Station,
+  reachable: Map<string, Station[]>,
+  mapKey: string,
+  hour: number,
+  dayIndex: number,
+): DestinationCandidates {
+  const pool = reachable.get(origin.id) ?? []
+  const stations: Station[] = []
+  const weights: number[] = []
   let total = 0
-  for (const station of stations) {
-    if (station.id !== originId) total += weights[station.type] ?? 1
+  for (const dest of pool) {
+    if (dest.id === origin.id) continue
+    const distance = Math.hypot(dest.posX - origin.posX, dest.posY - origin.posY)
+    const weight = destinationScore(mapKey, origin.type, dest.type, hour, dayIndex, distance)
+    if (weight <= 0) continue
+    stations.push(dest)
+    weights.push(weight)
+    total += weight
   }
-  if (total <= 0) return null
-  let roll = rng() * total
-  for (const station of stations) {
-    if (station.id === originId) continue
-    roll -= weights[station.type] ?? 1
-    if (roll <= 0) return station
+  return { stations, weights, total }
+}
+
+// 어느 역에서 어느 역으로 «한 번에» 갈 수 있는지. 같은 노선에 함께 실린 역끼리 이어 준다.
+// 환승은 아직 모델에 없다(승객 경로 탐색이 없다) — 그래서 한 노선 안에서만 목적지를 고른다.
+export function buildReachability(
+  stations: Station[],
+  lines: Array<{ status: string; lineStations: Array<{ station: Station }> }>,
+): Map<string, Station[]> {
+  const byStation = new Map<string, Map<string, Station>>()
+  for (const line of lines) {
+    if (line.status !== 'OPERATING') continue
+    const onLine = line.lineStations.map(ls => ls.station)
+    for (const station of onLine) {
+      let set = byStation.get(station.id)
+      if (!set) { set = new Map(); byStation.set(station.id, set) }
+      for (const other of onLine) set.set(other.id, other)
+    }
   }
-  return null
+  const result = new Map<string, Station[]>()
+  for (const station of stations) {
+    const set = byStation.get(station.id)
+    // 노선에 안 실린 역은 갈 곳이 없다 — 도시가 비어 보이지 않게 전체를 후보로 둔다.
+    result.set(station.id, set ? [...set.values()] : stations)
+  }
+  return result
+}
+
+// 미리 계산한 가중치로 목적지 추첨. 가중치에는 도착역 매력도 · 거리 감쇠 · 유형쌍 친화도가
+// 모두 들어 있다(demand-profile.ts의 destinationScore).
+function pickDestination(candidates: DestinationCandidates, rng: () => number): Station | null {
+  if (candidates.total <= 0) return null
+  let roll = rng() * candidates.total
+  for (let i = 0; i < candidates.stations.length; i++) {
+    roll -= candidates.weights[i]
+    if (roll <= 0) return candidates.stations[i]
+  }
+  return candidates.stations[candidates.stations.length - 1] ?? null
 }
 
 function pickPassengerType(
@@ -479,12 +536,22 @@ async function buildStationSnapshots(stations: Station[], cityId: string): Promi
 
 // ─── 차량 이동 및 승하차 ─────────────────────────────────────────────────
 
+// 노선의 station 배열에서 «지금 역보다 진행 방향 앞쪽»에 있는 역들. 승객은 이 안에
+// 목적지가 있을 때만 탄다 — 반대편으로 실어 나르지 않게.
+function stationsAhead(order: Station[], fromId: string, direction: number): string[] {
+  const at = order.findIndex(station => station.id === fromId)
+  if (at < 0) return []
+  const ahead = direction >= 0 ? order.slice(at + 1) : order.slice(0, at).reverse()
+  return ahead.map(station => station.id)
+}
+
 async function moveVehiclesAndBoard(
   lines: Array<{ id: string; status: string; mode: string; lineStations: Array<{ station: Station; order: number }>; vehicles: Vehicle[] }>,
   snapshots: StationSnapshot[],
   tick: number,
-): Promise<number> {
-  let transported = 0
+): Promise<{ boarded: number; arrived: number }> {
+  let boarded = 0
+  let arrived = 0
   const snapshotMap = new Map(snapshots.map(s => [s.station.id, s]))
 
   for (const line of lines) {
@@ -512,25 +579,49 @@ async function moveVehiclesAndBoard(
       }, stepMinutes, line.mode)
 
       // 한 경제 틱 안에 도착한 모든 역에서 승하차를 처리한다.
+      let onboard = motion.arrivedStationIds.length === 0 ? 0 : await db.passenger.count({
+        where: { vehicleId: vehicle.id, arrivedAtTick: null },
+      })
+
       for (const arrivedStationId of motion.arrivedStationIds) {
+        // 1) 하차 먼저 — 자리를 비워야 그만큼 태울 수 있다.
+        const alighting = await db.passenger.updateMany({
+          where: { vehicleId: vehicle.id, destStationId: arrivedStationId, arrivedAtTick: null },
+          data: { arrivedAtTick: tick, vehicleId: null },
+        })
+        onboard -= alighting.count
+        arrived += alighting.count
+
+        // 2) 승차 — 진행 방향 앞쪽에 목적지가 있는 승객만, 남은 자리만큼.
+        //    방향은 이번 틱이 끝난 시점 기준이라 종점에서 되돌아선 경우 조금 보수적으로
+        //    잡힌다(덜 태운다). 반대 방향으로 실어 나르는 것보다는 낫다.
+        const room = vehicle.capacity - onboard
         const snap = snapshotMap.get(arrivedStationId)
-        if (!snap || snap.waitingCount <= 0) continue
-        const boarding = Math.min(snap.waitingCount, vehicle.capacity)
+        if (room <= 0 || !snap || snap.waitingCount <= 0) continue
+
+        const ahead = stationsAhead(stationOrder, arrivedStationId, motion.direction)
+        if (ahead.length === 0) continue
+
         const boardingPassengers = await db.passenger.findMany({
-          where: { originStationId: arrivedStationId, boardedAtTick: null },
+          where: {
+            originStationId: arrivedStationId,
+            boardedAtTick: null,
+            destStationId: { in: ahead },
+          },
           select: { id: true },
           orderBy: [{ createdAtTick: 'asc' }, { id: 'asc' }],
-          take: boarding,
+          take: room,
         })
-        if (boardingPassengers.length > 0) {
-          await db.passenger.updateMany({
-            where: { id: { in: boardingPassengers.map(passenger => passenger.id) } },
-            data: { boardedAtTick: tick },
-          })
-          snap.waitingCount -= boardingPassengers.length
-          snap.congestion = Math.min(snap.waitingCount / snap.station.capacity, 1)
-          transported += boardingPassengers.length
-        }
+        if (boardingPassengers.length === 0) continue
+
+        await db.passenger.updateMany({
+          where: { id: { in: boardingPassengers.map(passenger => passenger.id) } },
+          data: { boardedAtTick: tick, vehicleId: vehicle.id },
+        })
+        onboard += boardingPassengers.length
+        snap.waitingCount -= boardingPassengers.length
+        snap.congestion = Math.min(snap.waitingCount / snap.station.capacity, 1)
+        boarded += boardingPassengers.length
       }
 
       await db.vehicle.update({
@@ -548,7 +639,7 @@ async function moveVehiclesAndBoard(
       vehicle.segmentProgressMinutes = motion.segmentProgressMinutes
     }
   }
-  return transported
+  return { boarded, arrived }
 }
 
 // ─── 하이라이트 수집 ─────────────────────────────────────────────────────
