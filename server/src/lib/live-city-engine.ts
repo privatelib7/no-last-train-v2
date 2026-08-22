@@ -402,7 +402,6 @@ export function advanceFrame(engine: LiveCityEngine, now: number): void {
     if (line.status !== 'OPERATING') continue
     if (line.stations.length < 2) continue
     const expressStops = expressStopStationIds(line.stations)
-
     for (const vehicle of line.vehicles) {
       if (!isVehicleInService(vehicle)) continue
 
@@ -734,6 +733,7 @@ export function renderLiveMotionSnapshot(engine: LiveCityEngine, now: number): C
     vehicles: snapshot.vehicles.map(v => ({
       ...v,
       justBoarded: engine.justBoardedByVehicleId.get(v.id) ?? 0,
+      onboardCount: engine.onboard.get(v.id)?.length ?? 0,
     })),
   }
 }

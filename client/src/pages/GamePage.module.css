@@ -2804,3 +2804,14 @@
   letter-spacing: -0.03em;
 }
 
+
+/* 열차 위 탑승 인원 */
+.onboardCount {
+  font-size: 1.8px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  paint-order: stroke fill;
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 0.42px;
+  pointer-events: none;
+}
