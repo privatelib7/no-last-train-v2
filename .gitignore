@@ -14,7 +14,6 @@ node_modules
 dist
 dist-ssr
 .next
-.open-next
 .vite
 *.local
 *.tsbuildinfo
@@ -29,6 +28,8 @@ deploy/*
 !deploy/bootstrap.sh
 !deploy/oci-create-instance.sh
 !deploy/publish.sh
+!deploy/auto-deploy.sh
+!deploy/install-auto-deploy.sh
 !deploy/setup-https.sh
 !deploy/cloudflare-tunnel.sh
 !deploy/ecosystem.config.cjs
@@ -45,8 +46,6 @@ deploy/*
 *.njsproj
 *.sln
 *.sw?
-.wrangler
-.dev.vars
 server/src/generated
 
 # 공공데이터 원본 페이지 캐시 — scripts/build-demand-profile.mjs가 다시 받을 수 있다

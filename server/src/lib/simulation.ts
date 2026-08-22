@@ -1,7 +1,13 @@
 import { db } from './db'
 import { evaluatePolicies } from './policy-engine'
-import { calculateTickEconomy, isManagementGoalDeadlineMissed, resolveManagementGoal } from './economy'
-import { advanceVehicleMotion, stationDwellMinutes } from './vehicle-motion'
+import {
+  MAX_MANAGEMENT_LEVEL,
+  calculateTickEconomy,
+  isFinalManagementGoalReached,
+  isManagementGoalDeadlineMissed,
+  resolveManagementGoal,
+} from './economy'
+import { advanceVehicleMotion, expressStopStationIds, stationDwellMinutes } from './vehicle-motion'
 import { isVehicleInService } from './vehicle-service'
 import { calcServiceScore } from './service-score'
 import { SIM, dayIndexOfTick } from '@/types/game'
@@ -11,7 +17,7 @@ import type { Passenger, Vehicle, Station, Line, GameEvent } from '@prisma/clien
 
 // ─── 결정론적 RNG (seeded) ───────────────────────────────────────────────
 
-function mulberry32(seed: number) {
+export function mulberry32(seed: number) {
   return function () {
     seed |= 0; seed = seed + 0x6D2B79F5 | 0
     let t = Math.imul(seed ^ seed >>> 15, 1 | seed)
@@ -66,11 +72,14 @@ const HEARTBEAT_MAX_TICKS = 3
 // 아무도 관제실을 보고 있지 않아도(WS 구독이 없어도) 실시간에 가깝게 틱을 진행시켜,
 // 나중에 들어왔을 때 밀린 만큼을 몰아서 따라잡을 필요가(그래서 순간이동처럼 보일
 // 필요가) 없게 한다. scripts/realtime-server.ts가 주기적으로 호출한다.
-export async function tickRecentlyActiveCities(): Promise<void> {
+export async function tickRecentlyActiveCities(excludeCityIds?: Set<string>): Promise<void> {
   const cities = await db.city.findMany({
     where: {
       status: 'ACTIVE',
       lastTickAt: { gt: new Date(Date.now() - HEARTBEAT_STALE_CUTOFF_MS) },
+      // 라이브 엔진(live-city-engine.ts)이 이미 직접 틱을 굴리는 도시는 여기서 또
+      // syncCityClock을 걸 필요가 없다 — lastTickAt이 항상 최신이라 no-op일 뿐인 헛수고다.
+      ...(excludeCityIds && excludeCityIds.size > 0 ? { id: { notIn: [...excludeCityIds] } } : {}),
     },
     select: { id: true },
   })
@@ -87,11 +96,9 @@ export async function tickRecentlyActiveCities(): Promise<void> {
   await Promise.all(Array.from({ length: workerCount }, () => worker()))
 }
 
-// Cloudflare Workers 배포에서는 요청마다 격리된 isolate가 뜰 수 있어 위 in-memory
-// 큐만으로는 같은 도시에 대한 동시 요청을 막지 못한다(각 isolate가 서로 다른
-// citySimulationQueues 인스턴스를 가짐). 이 경우 같은 틱이 두 번 처리되어 차량이
-// 순간이동하거나 갑자기 빨라지는 것처럼 보이는 원인이 된다. DB 어드바이저리 락으로
-// 프로세스/isolate 경계를 넘어 도시 단위 상호 배제를 보장한다.
+// 같은 도시를 동시에 시뮬레이션하면 틱이 두 번 처리되어 차량이
+// 순간이동하거나 갑자기 빨라지는 것처럼 보일 수 있다. DB 어드바이저리 락으로
+// 프로세스 경계를 넘어 도시 단위 상호 배제를 보장한다.
 async function withCityLock<T>(cityId: string, task: () => Promise<T>): Promise<T> {
   return db.$transaction(
     async tx => {
@@ -100,6 +107,16 @@ async function withCityLock<T>(cityId: string, task: () => Promise<T>): Promise<
     },
     { timeout: 60_000, maxWait: 15_000 },
   )
+}
+
+/**
+ * live-city-engine.ts가 DB flush 시 같은 도시의 다른 진입점(syncCityClock 등)과
+ * 경합하지 않도록 재사용하는 진입점. 어드바이저리 락 + 인메모리 큐를 그대로 공유해서,
+ * 라이브 엔진이 flush 중이어도 API 라우트의 syncCityClock 호출은 직렬화되어 안전하게
+ * no-op(이미 lastTickAt이 최신이라 pendingTicks=0)이 된다.
+ */
+export function runCitySimulationExclusive<T>(cityId: string, task: () => Promise<T>): Promise<T> {
+  return enqueueCitySimulation(cityId, task)
 }
 
 function enqueueCitySimulation<T>(cityId: string, task: () => Promise<T>): Promise<T> {
@@ -162,7 +179,9 @@ async function simulateTicksUnlocked(cityId: string, count: number): Promise<Sim
   let revenueGoal = city.revenueGoal
   const initialGoal = resolveManagementGoal(city.revenueGoal, city.goalReachedAtTick)
   let goalLevel = initialGoal.level
-  let goalsCompleted = initialGoal.level - 1
+  let goalsCompleted = isFinalManagementGoalReached(city.revenueGoal, city.totalRevenue)
+    ? MAX_MANAGEMENT_LEVEL
+    : initialGoal.level - 1
   let happiness = city.happiness
   let score = city.score
   let insolvencyTicks = city.insolvencyTicks
@@ -307,7 +326,9 @@ async function simulateTicksUnlocked(cityId: string, count: number): Promise<Sim
         tickNumber,
         gameTimeHour,
         type: 'GOAL',
-        description: `${economy.completedGoalLevel}단계 경영 목표를 달성해 지원금 ₵5,000을 받고 ${economy.goalLevel}단계 목표가 설정되었습니다.`,
+        description: economy.finalGoalReached
+          ? `${economy.completedGoalLevel}단계 최종 경영 목표를 달성했습니다.`
+          : `${economy.completedGoalLevel}단계 경영 목표를 달성해 지원금 ₵5,000을 받고 ${economy.goalLevel}단계 목표가 설정되었습니다.`,
         severity: 'INFO',
       })
     }
@@ -366,7 +387,7 @@ async function simulateTicksUnlocked(cityId: string, count: number): Promise<Sim
 
 // ─── 사건 활성화 ─────────────────────────────────────────────────────────
 
-function activateEvents(events: GameEvent[], tick: number): GameEvent[] {
+export function activateEvents(events: GameEvent[], tick: number): GameEvent[] {
   const active: GameEvent[] = []
   for (const ev of events) {
     if (ev.startsAtTick <= tick && tick < ev.startsAtTick + ev.durationTicks) {
@@ -378,7 +399,7 @@ function activateEvents(events: GameEvent[], tick: number): GameEvent[] {
 
 // ─── 승객 생성 ───────────────────────────────────────────────────────────
 
-function generatePassengers(
+export function generatePassengers(
   stations: Station[],
   mapKey: string,
   tick: number,
@@ -538,7 +559,8 @@ async function buildStationSnapshots(stations: Station[], cityId: string): Promi
 
 // 노선의 station 배열에서 «지금 역보다 진행 방향 앞쪽»에 있는 역들. 승객은 이 안에
 // 목적지가 있을 때만 탄다 — 반대편으로 실어 나르지 않게.
-function stationsAhead(order: Station[], fromId: string, direction: number): string[] {
+// 라이브 엔진(live-city-engine.ts)도 같은 규칙을 써야 해서 id만 요구한다.
+export function stationsAhead(order: Array<{ id: string }>, fromId: string, direction: number): string[] {
   const at = order.findIndex(station => station.id === fromId)
   if (at < 0) return []
   const ahead = direction >= 0 ? order.slice(at + 1) : order.slice(0, at).reverse()
@@ -558,6 +580,7 @@ async function moveVehiclesAndBoard(
     if (line.status !== 'OPERATING') continue
     const stationOrder = line.lineStations.map(ls => ls.station)
     if (stationOrder.length < 2) continue
+    const expressStops = expressStopStationIds(stationOrder)
 
     const orderedVehicles = line.vehicles.slice().sort((a, b) => a.id.localeCompare(b.id))
     for (const vehicle of orderedVehicles) {
@@ -576,7 +599,7 @@ async function moveVehiclesAndBoard(
         currentStationId: vehicle.currentStationId ?? stationOrder[0].id,
         direction: vehicle.direction,
         segmentProgressMinutes: vehicle.segmentProgressMinutes,
-      }, stepMinutes, line.mode)
+      }, stepMinutes, line.mode, vehicle.isExpress ? expressStops : null)
 
       // 한 경제 틱 안에 도착한 모든 역에서 승하차를 처리한다.
       let onboard = motion.arrivedStationIds.length === 0 ? 0 : await db.passenger.count({

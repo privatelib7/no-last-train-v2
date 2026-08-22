@@ -2,6 +2,7 @@ import { db } from './db'
 import {
   advanceVehicleMotion,
   depotPulloutMinutes,
+  expressStopStationIds,
   getTransitMotionPhysics,
   stationDwellMinutes,
   type TransitMotionPhysics,
@@ -27,6 +28,8 @@ export type CityMotionVehicle = {
   mode: 'SUBWAY' | 'BUS' | string
   status: string
   isSpare: boolean
+  /** 급행 — 역을 2개씩 건너뛰며 정차 */
+  isExpress: boolean
   /** DB 원본 — 클라이언트가 syncTick에 맞춰 추가 보간할 때 사용 */
   currentStationId: string | null
   direction: number
@@ -42,6 +45,12 @@ export type CityMotionVehicle = {
   isPullingOut: boolean
   segmentDurationMinutes: number
   renderSegmentProgressMinutes: number
+  /**
+   * 라이브 엔진(live-city-engine.ts)이 있는 도시에서만 채워진다 — 바로 이전 프레임부터
+   * 지금 프레임 사이에 이 차량이 실제로 태운 인원수(보통 0). 클라이언트가 "방금 매출이
+   * 얼마 발생했는지" 화면에 띄울 때 대기인원 변화를 추측하지 않고 이 값을 그대로 쓴다.
+   */
+  justBoarded?: number
 }
 
 export type CityMotionSnapshot = {
@@ -63,6 +72,14 @@ export type CityMotionSnapshot = {
   vehicles: CityMotionVehicle[]
   /** 역별 대기 승객 수 — city state(2500ms)보다 훨씬 자주(sync 주기) 갱신된다 */
   stationStats: CityMotionStationStat[]
+  /**
+   * 라이브 엔진(live-city-engine.ts)이 소유한 도시에서만 채워지는 "화면용" 잔고/매출 —
+   * 마지막 경제 틱 확정치에 이번 경제 틱에서 지금까지 탄 승객의 운임을 더한 값이라
+   * city WS 메시지(2500ms)를 기다리지 않고 차량 도착·탑승과 같은 프레임에서 갱신된다.
+   * 라이브 엔진이 없는 도시는 이 필드가 없고, 클라이언트는 기존 city 스냅샷 값을 쓴다.
+   */
+  liveCashBalance?: number
+  liveTotalRevenue?: number
 }
 
 export type CityMotionStationStat = { stationId: string; waitingCount: number }
@@ -89,6 +106,7 @@ type CachedVehicle = {
   currentStationId: string | null
   direction: number
   segmentProgressMinutes: number
+  isExpress: boolean
 }
 
 type CachedLine = {
@@ -143,7 +161,7 @@ async function readMotionBaseFromRedis(cityId: string): Promise<CityMotionBase |
 }
 
 /** DB에서 새로 읽은 base를 Redis에 채워두고(TTL) 구독자들에게 즉시 알린다 */
-function publishMotionBase(base: CityMotionBase) {
+export function publishMotionBase(base: CityMotionBase) {
   const payload = JSON.stringify(base)
   void safeRedisCall(client => client.set(REDIS_BASE_KEY_PREFIX + base.cityId, payload, 'EX', REDIS_BASE_TTL_SEC))
   void safeRedisCall(client => client.publish(REDIS_MOTION_UPDATE_CHANNEL, payload))
@@ -206,6 +224,7 @@ export async function loadCityMotionBase(cityId: string): Promise<CityMotionBase
         currentStationId: vehicle.currentStationId,
         direction: vehicle.direction,
         segmentProgressMinutes: vehicle.segmentProgressMinutes,
+        isExpress: vehicle.isExpress,
       })),
     })),
   }
@@ -233,6 +252,7 @@ export function renderCityMotionSnapshot(
 
   for (const line of base.lines) {
     const stations = line.stations
+    const expressStops = expressStopStationIds(stations)
     const terminus = (() => {
       if (stations.length === 0) return null
       if (stations.length === 1) return stations[0]
@@ -250,6 +270,7 @@ export function renderCityMotionSnapshot(
         mode: line.mode,
         status: vehicle.status,
         isSpare: vehicle.isSpare,
+        isExpress: vehicle.isExpress,
         currentStationId: vehicle.currentStationId,
         direction: vehicle.direction,
         segmentProgressMinutes: vehicle.segmentProgressMinutes,
@@ -302,7 +323,7 @@ export function renderCityMotionSnapshot(
         currentStationId: vehicle.currentStationId,
         direction: vehicle.direction,
         segmentProgressMinutes: vehicle.segmentProgressMinutes,
-      }, stepMinutes, line.mode)
+      }, stepMinutes, line.mode, vehicle.isExpress ? expressStops : null)
 
       const atDepotTerminus = !!terminus
         && motion.currentStationId === terminus.id

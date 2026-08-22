@@ -4,11 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "npm run db:prepare && node scripts/next-with-env.mjs dev",
-    "build": "prisma db push && prisma generate && opennextjs-cloudflare build",
-    "build:cf": "npm run build",
+    "build": "next build",
     "build:next": "next build",
-    "deploy": "opennextjs-cloudflare deploy",
-    "preview": "opennextjs-cloudflare preview",
     "test": "tsx --test src/lib/*.test.ts",
     "start": "node scripts/next-with-env.mjs start",
     "db:prepare": "prisma generate && prisma db push && tsx prisma/seed.ts",
@@ -35,7 +32,6 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@opennextjs/cloudflare": "^1.20.2",
     "@types/node": "^22.0.0",
     "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.21.0",
@@ -43,7 +39,6 @@
     "@types/ws": "^8.18.1",
     "prisma": "^6.19.3",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0",
-    "wrangler": "^4.120.0"
+    "typescript": "^5.6.0"
   }
 }

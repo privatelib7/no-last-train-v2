@@ -25,6 +25,8 @@ export type Vehicle = {
   headwayMinutes: number
   direction: number
   segmentProgressMinutes: number
+  /** 급행 — 역을 2개씩 건너뛰며 정차 */
+  isExpress: boolean
 }
 
 export type Policy = {
@@ -76,6 +78,8 @@ export type GameCity = {
   goalLevel: number
   goalDeadlineDay: number
   goalsCompleted: number
+  maxGoalLevel: number
+  finalGoalReached: boolean
   happiness: number
   score: number
   insolvencyTicks: number
@@ -131,6 +135,7 @@ export type CityState = {
     gameOverGraceTicks: number
     goalRewardCash: number
     farePerPassenger: number
+    operatingCostMultiplier: number
   }
 }
 
@@ -224,6 +229,7 @@ export type CityMotionVehicle = {
   mode: 'SUBWAY' | 'BUS' | string
   status: string
   isSpare: boolean
+  isExpress: boolean
   currentStationId: string | null
   direction: number
   segmentProgressMinutes: number
@@ -237,6 +243,8 @@ export type CityMotionVehicle = {
   isPullingOut: boolean
   segmentDurationMinutes: number
   renderSegmentProgressMinutes: number
+  /** 라이브 엔진이 있는 도시에서만 채워진다 — 바로 이전 프레임 사이 이 차량이 실제로 태운 인원수 */
+  justBoarded?: number
 }
 
 export type TransitMotionPhysics = {
@@ -267,6 +275,13 @@ export type CityMotionSnapshot = {
   vehicles: CityMotionVehicle[]
   /** 역별 대기 승객 수 — city state(2500ms)보다 훨씬 자주 갱신된다(Redis 보조 캐시로 sync 주기마다) */
   stationStats: CityMotionStationStat[]
+  /**
+   * 서버가 라이브 엔진(100ms 인메모리 틱)으로 이 도시를 굴리고 있을 때만 채워진다.
+   * city 메시지(2500ms)의 cashBalance/totalRevenue보다 훨씬 자주 갱신되며,
+   * 차량이 역에 도착해 탑승 처리되는 것과 같은 프레임에서 함께 바뀐다.
+   */
+  liveCashBalance?: number
+  liveTotalRevenue?: number
 }
 
 export function fetchCityMotion(cityId: string, playerToken?: string) {
@@ -303,6 +318,7 @@ export type CityAction =
   | { type: 'SET_LINE_STATUS'; lineId: string; status: 'OPERATING' | 'SUSPENDED' }
   | { type: 'BUY_VEHICLE'; lineId: string; count: number }
   | { type: 'SET_VEHICLE_SERVICE'; lineId: string; vehicleId: string; inService: boolean }
+  | { type: 'SET_VEHICLE_EXPRESS'; lineId: string; vehicleId: string; express: boolean }
   | { type: 'TRANSFER_VEHICLE'; lineId: string; vehicleId: string; targetLineId: string }
   | { type: 'REMOVE_VEHICLE'; lineId: string; vehicleId: string }
 

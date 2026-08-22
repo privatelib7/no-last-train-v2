@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { deleteCity } from '../api/cities'
+import { unlockBgm } from '../lib/bgm'
+import { loadSettings, saveSettings } from '../lib/settings'
 import styles from './CitySettingsModal.module.css'
 
 interface Props {
@@ -16,6 +18,20 @@ export default function CitySettingsModal({ cityId, roomTitle, playerToken, onCl
   const [showConfirmPopup, setShowConfirmPopup] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [bgm, setBgm] = useState(() => {
+    const { bgmEnabled, bgmVolume } = loadSettings()
+    return { bgmEnabled, bgmVolume }
+  })
+
+  // 게임을 벗어나지 않고 배경음악을 끄고 켜거나 음량을 맞춘다.
+  // saveSettings가 nlt:settings를 쏘면 bgm 모듈이 바로 반영한다.
+  const updateBgm = (patch: Partial<typeof bgm>) => {
+    // 슬라이더·토글 조작 자체가 사용자 제스처라 여기서 자동재생 잠금을 푼다.
+    unlockBgm()
+    const next = { ...bgm, ...patch }
+    saveSettings({ ...loadSettings(), ...next })
+    setBgm(next)
+  }
 
   const nameMatches = nameInput === roomTitle
 
@@ -50,13 +66,40 @@ export default function CitySettingsModal({ cityId, roomTitle, playerToken, onCl
         </div>
 
         {step === 'menu' && (
-          <button
-            className={styles.dangerBtn}
-            type="button"
-            onClick={() => setStep('confirmName')}
-          >
-            관제실 삭제
-          </button>
+          <>
+            <div className={styles.soundBlock}>
+              <label className={styles.toggleRow}>
+                <span className={styles.toggleLabel}>배경음악</span>
+                <input
+                  className={styles.toggle}
+                  type="checkbox"
+                  checked={bgm.bgmEnabled}
+                  onChange={(e) => updateBgm({ bgmEnabled: e.target.checked })}
+                  aria-label="배경음악 켜기/끄기"
+                />
+              </label>
+              <div className={styles.volumeRow}>
+                <input
+                  className={styles.slider}
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={bgm.bgmVolume}
+                  disabled={!bgm.bgmEnabled}
+                  onChange={(e) => updateBgm({ bgmVolume: Number(e.target.value) })}
+                  aria-label="배경음악 음량"
+                />
+                <span className={styles.volumeValue}>{bgm.bgmVolume}%</span>
+              </div>
+            </div>
+            <button
+              className={styles.dangerBtn}
+              type="button"
+              onClick={() => setStep('confirmName')}
+            >
+              관제실 삭제
+            </button>
+          </>
         )}
 
         {step === 'confirmName' && (

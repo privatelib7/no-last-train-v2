@@ -1450,6 +1450,26 @@
   font-weight: 800;
 }
 
+.expressVehicleButton {
+  width: 100%;
+  min-height: 32px;
+  margin-top: 8px;
+  border: 1px solid rgba(63, 100, 214, 0.4);
+  border-radius: 6px;
+  background: var(--gp-surface);
+  color: #3f5cd6;
+  font-size: 14.5px;
+  font-weight: 800;
+}
+
+.expressVehicleButton:disabled {
+  opacity: 0.4;
+}
+
+.expressVehicleButtonActive {
+  background: rgba(63, 100, 214, 0.14);
+}
+
 .depotHeading {
   margin-top: 14px;
   color: var(--gp-text-depot);
@@ -2320,6 +2340,12 @@
   stroke-width: 1;
 }
 
+/* 급행 차량 표시 — 선택 표시(.selectedTrain)와 동시에 적용돼도 급행 빨간 테두리가 우선한다 */
+.expressTrain .trainBody {
+  stroke: #e0303a;
+  stroke-width: 0.9;
+}
+
 .trainBody {
   stroke: #fff;
   stroke-width: 0.65;
@@ -2746,3 +2772,35 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* 노선 양 끝 번호 배지 */
+.lineEndBadge {
+  cursor: grab;
+  outline: none;
+}
+
+.lineEndBadge:active {
+  cursor: grabbing;
+}
+
+.lineEndBadge circle {
+  transition: r 90ms ease-out;
+}
+
+.lineEndBadge:hover circle,
+.lineEndBadge:focus-visible circle {
+  r: 1.85;
+}
+
+.lineEndBadge circle {
+  stroke: var(--gp-map-label-halo);
+  stroke-width: 0.28px;
+}
+
+.lineEndBadge text {
+  fill: #fff;
+  font-size: 2.1px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+}
+

@@ -19,7 +19,7 @@ import type { AuthSession } from '../api/auth'
 import { updateRoomTitle } from '../api/cities'
 import { leaveCursor, syncCursor, type RemoteCursor } from '../api/cursors'
 import { connectRealtime } from '../api/realtime'
-import { notifyEmergency } from '../lib/notifications'
+import { newlyJoinedPlayers, notifyEmergency } from '../lib/notifications'
 import { playGoalUnlockSfx } from '../lib/sfx'
 import InviteModal from './InviteModal'
 import CitySettingsModal from './CitySettingsModal'
@@ -39,6 +39,8 @@ type DragTarget = { kind: 'STATION'; id: string } | null
 
 type StationLinkDrag = {
   stationId: string
+  /** 노선 끝 배지에서 시작한 드래그 — 선택 노선 대신 이 노선을 잇는다 */
+  lineId?: string
   startX: number
   startY: number
   x: number
@@ -94,6 +96,11 @@ const PRESENCE_COLORS = ['#ff6f91', '#4fc9a8', '#5b8cf2', '#ffb648', '#a77dfb', 
 const MAX_VEHICLES_PER_LINE = 8
 // 전철·버스 글리프 축소 배율 — 역/선로에 비해 차량이 너무 커 보이지 않게 한다
 const INITIAL_MAP_VIEW: MapView = { x: 0, y: 0, width: 100, height: 100 }
+
+// 노선 끝 배지 — 종점에서 띄우는 거리 / 겹칠 때 한 칸 간격 / 최대 몇 칸까지 밀지 (지도 단위, mapScale 곱해 씀)
+const BADGE_GAP = 2.4
+const BADGE_STEP = 4.1
+const BADGE_MAX_SHIFT = 6
 
 const LINE_COLORS: Record<string, string> = {
   RED: '#E9783C',
@@ -167,9 +174,10 @@ function linePoints(line: GameLine) {
 }
 
 function trainStatus(vehicle: Vehicle) {
-  if (vehicle.isSpare) return '대기'
-  if (vehicle.status === 'OPERATING') return '운행 중'
-  if (vehicle.status === 'LOANED') return '지원 운행'
+  const suffix = vehicle.isExpress ? ' · 급행' : ''
+  if (vehicle.isSpare) return `대기${suffix}`
+  if (vehicle.status === 'OPERATING') return `운행 중${suffix}`
+  if (vehicle.status === 'LOANED') return `지원 운행${suffix}`
   if (vehicle.status === 'MAINTENANCE') return '정비 중'
   return '운행 불가'
 }
@@ -212,6 +220,12 @@ function lineDisplayName(name: string) {
 }
 export default function GamePage({ cityId, session, onBack, onRequireLogin }: Props) {
   const [state, setState] = useState<CityState | null>(null)
+  /**
+   * 라이브 엔진(서버가 100ms 인메모리 틱으로 도시를 굴리는 경우)이 motion 메시지에
+   * 실어 보내는 "화면용" 잔고/매출. city 메시지(2500ms)보다 훨씬 자주 갱신되며,
+   * 값이 실제로 바뀔 때만 갱신해 무거운 state 전체는 그대로 두고 HUD 숫자만 자주 리렌더한다.
+   */
+  const [liveEconomy, setLiveEconomy] = useState<{ cashBalance: number; totalRevenue: number } | null>(null)
   const [selectedLineId, setSelectedLineId] = useState('')
   const [selectedVehicleId, setSelectedVehicleId] = useState('')
   const [stationBuildMode, setStationBuildMode] = useState(false)
@@ -230,6 +244,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const [errorLeaving, setErrorLeaving] = useState(false)
   const [successToast, setSuccessToast] = useState<string | null>(null)
   const [successLeaving, setSuccessLeaving] = useState(false)
+  const goalProgressCityRef = useRef<string | null>(null)
   const prevGoalsCompletedRef = useRef<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [hudSample, setHudSample] = useState<HudSample>({ continuousTick: 0, waitingPassengers: 0 })
@@ -276,6 +291,8 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const cashEmergencyRef = useRef(false)
   const gameOverRiskRef = useRef(false)
   const gameOverFiredRef = useRef(false)
+  const presenceBaselineReadyRef = useRef(false)
+  const knownRemotePlayerIdsRef = useRef<Set<string>>(new Set())
   /** 서버 /motion 스냅샷 — LiveTransitLayer가 읽어 차량 좌표를 그린다 */
   const motionRef = useRef<CityMotionSnapshot | null>(null)
   const motionClockOffsetRef = useRef(0)
@@ -330,13 +347,25 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   useEffect(() => {
     if (!state) return
     const completed = state.city.goalsCompleted
+    if (goalProgressCityRef.current !== state.city.id) {
+      goalProgressCityRef.current = state.city.id
+      prevGoalsCompletedRef.current = completed
+      return
+    }
     const prev = prevGoalsCompletedRef.current
     prevGoalsCompletedRef.current = completed
     if (prev === null || completed <= prev) return
     setSuccessToast(`${completed}단계 목표 달성 완료!`)
     setSuccessLeaving(false)
     playGoalUnlockSfx()
-  }, [state?.city.id, state?.city.goalsCompleted])
+    void notifyEmergency(
+      `${state.city.roomTitle} — 목표 달성`,
+      state.city.finalGoalReached
+        ? `${completed}단계 최종 경영 목표를 달성했습니다.`
+        : `${completed}단계 목표를 달성했습니다. 다음 목표가 시작됩니다.`,
+      `nlt-goal-${state.city.id}-${completed}`,
+    )
+  }, [state])
 
   useEffect(() => {
     if (!successToast) {
@@ -532,6 +561,15 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
         motionPollCountRef.current += 1
         motionClockOffsetRef.current = next.serverNow - Date.now()
         motionRef.current = next
+        if (next.liveCashBalance !== undefined && next.liveTotalRevenue !== undefined) {
+          const cashBalance = next.liveCashBalance
+          const totalRevenue = next.liveTotalRevenue
+          setLiveEconomy(prev => (prev && prev.cashBalance === cashBalance && prev.totalRevenue === totalRevenue)
+            ? prev
+            : { cashBalance, totalRevenue })
+        } else {
+          setLiveEconomy(prev => (prev === null ? prev : null))
+        }
         const fingerprint = [
           next.currentTick,
           ...next.vehicles.map(v =>
@@ -613,6 +651,8 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   useEffect(() => {
     const token = session?.token
     if (!token) return
+    presenceBaselineReadyRef.current = false
+    knownRemotePlayerIdsRef.current = new Set()
     let cancelled = false
     let inflight = false
     let lastSentAt = 0
@@ -633,6 +673,20 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
         if (cancelled) return
         lastSentAt = Date.now()
         cursorLastSentRef.current = { x, y }
+        const nextPlayerIds = new Set(result.cursors.map(cursor => cursor.playerId))
+        if (!presenceBaselineReadyRef.current) {
+          // 첫 동기화에 이미 있던 사람은 "방금 접속"한 것이 아니므로 기준선만 세운다.
+          presenceBaselineReadyRef.current = true
+        } else {
+          for (const cursor of newlyJoinedPlayers(knownRemotePlayerIdsRef.current, result.cursors)) {
+            void notifyEmergency(
+              `${stateRef.current?.city.roomTitle ?? '관제실'} — 동료 접속`,
+              `${cursor.nickname}님이 관제실에 접속했습니다.`,
+              `nlt-player-${cityId}-${cursor.playerId}`,
+            )
+          }
+        }
+        knownRemotePlayerIdsRef.current = nextPlayerIds
         setRemoteCursors(prev => {
           const next = result.cursors
           if (
@@ -660,6 +714,8 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       window.clearInterval(timer)
       cursorPosRef.current = null
       cursorLastSentRef.current = null
+      presenceBaselineReadyRef.current = false
+      knownRemotePlayerIdsRef.current = new Set()
       setRemoteCursors([])
       void leaveCursor(cityId, token)
     }
@@ -781,6 +837,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   }
 
   // 응급 상황(운영자금 마이너스 · 파산·행복도 위험 · 게임오버) 진입 순간에만 한 번씩 크롬 알림을 띄운다.
+  // 목표 달성은 위 목표 effect, 동료 접속은 커서 프레즌스 동기화에서 별도 처리한다.
   // 도시를 새로 열었을 때 이미 위험한 상태였다면 그건 "방금 벌어진 일"이 아니므로 기준선만 세우고 알리지 않는다.
   useEffect(() => {
     if (!state) return
@@ -899,6 +956,8 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       }
       const next = await loadCity()
       if (pendingUndo) pushSegmentUndo(pendingUndo)
+      // 방금 만든 노선을 선택해 둔다 — 이어서 역을 클릭하면 새 노선이 아니라 연장이 된다
+      if (action.type === 'CREATE_CONNECTED_LINE' && result.line) selectLine(result.line.id)
       if (action.type === 'REMOVE_VEHICLE') setSelectedVehicleId('')
       if (action.type === 'RESET_CITY') {
         segmentUndoStackRef.current = []
@@ -1135,11 +1194,14 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     setSegmentDrag(next)
   }
 
-  const beginStationLinkDrag = (event: PointerEvent<SVGGElement>, stationId: string) => {
+  const beginStationLinkDrag = (event: PointerEvent<SVGGElement>, stationId: string, lineId?: string) => {
     if (event.button !== 0 || busy || stationBuildMode || moveStationMode) return
     event.stopPropagation()
+    // 배지에서 끌기 시작하면 그 노선을 선택해 둔다 — 고스트 선 색과 사이드바가 따라온다
+    if (lineId && lineId !== selectedLineId) selectLine(lineId)
     const next: StationLinkDrag = {
       stationId,
+      lineId,
       startX: event.clientX,
       startY: event.clientY,
       x: event.clientX,
@@ -1174,7 +1236,14 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       return
     }
 
-    // ＋로 만든(또는 플레이어 소유) 운영 노선만 이어준다. 없는 노선을 새로 만들지는 않는다.
+    // 연결에 성공하면 마지막 선택 역(B)을 자동 해제
+    const clearSelectionOnSuccess = (next: CityState | null) => {
+      if (!next) return
+      setSelectedStationId('')
+      setRenameValue('')
+    }
+
+    // ＋로 만든(또는 플레이어 소유) 운영 노선을 먼저 이어준다.
     const isPlayerOperatedLine = !!selectedLine?.playerId
     if (selectedLine && isPlayerOperatedLine && canExtendLine(selectedLine, prevSelectedId, stationId)) {
       void performAction({
@@ -1182,14 +1251,19 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
         lineId: selectedLine.id,
         fromStationId: prevSelectedId,
         toStationId: stationId,
-      }).then(next => {
-        // 연결에 성공하면 마지막 선택 역(B)을 자동 해제
-        if (next) {
-          setSelectedStationId('')
-          setRenameValue('')
-        }
-      })
+      }).then(clearSelectionOnSuccess)
+      return
     }
+
+    // 이을 노선이 없으면 두 역을 잇는 새 지하철 노선을 만든다.
+    // 역 짓기·역 옮기기 중에는 클릭 뜻이 달라지므로 건너뛴다.
+    if (stationBuildMode || moveStationMode) return
+    void performAction({
+      type: 'CREATE_CONNECTED_LINE',
+      mode: 'SUBWAY',
+      fromStationId: prevSelectedId,
+      toStationId: stationId,
+    }).then(clearSelectionOnSuccess)
   }
 
   const handleMapClick = (event: MouseEvent<SVGSVGElement>) => {
@@ -1320,15 +1394,16 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       window.setTimeout(() => { suppressStationClick.current = false }, 0)
       const targetId = document.elementFromPoint(event.clientX, event.clientY)
         ?.closest('[data-station-id]')?.getAttribute('data-station-id')
-      if (!targetId || targetId === current.stationId || !selectedLineId) return
+      const dragLineId = current.lineId ?? selectedLineId
+      if (!targetId || targetId === current.stationId || !dragLineId) return
       const cityState = stateRef.current
-      const dragLine = cityState?.city.lines.find(item => item.id === selectedLineId)
+      const dragLine = cityState?.city.lines.find(item => item.id === dragLineId)
       const fromStation = cityState?.city.stations.find(s => s.id === current.stationId)
       const toStation = cityState?.city.stations.find(s => s.id === targetId)
       if (!dragLine || !fromStation || !toStation) return
       void performActionRef.current?.({
         type: 'BUILD_SEGMENT',
-        lineId: selectedLineId,
+        lineId: dragLineId,
         fromStationId: current.stationId,
         toStationId: targetId,
       })
@@ -1484,6 +1559,35 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const continuousTick = hudSample.continuousTick > 0 ? hudSample.continuousTick : currentTick
   const currentGameDay = Math.floor(continuousTick / TICKS_PER_DAY) + 1
   const mapScale = mapView.width / 100
+  // 노선 끝 배지 위치. 종점이 같은 역인 노선끼리 포개지지 않게 바깥쪽으로 한 칸씩 밀어낸다.
+  const lineEndBadges: Array<{
+    id: string; line: GameLine; label: string; station: Station
+    isHead: boolean; x: number; y: number
+  }> = []
+  for (const line of sortedLines) {
+    if (line.lineStations.length < 2) continue
+    const stops = orderedStations(line)
+    const label = line.name.match(/\d+/)?.[0] ?? line.name.slice(0, 1)
+    for (const [isHead, at, prev] of [
+      [true, stops[0], stops[1]] as const,
+      [false, stops[stops.length - 1], stops[stops.length - 2]] as const,
+    ]) {
+      // 직전 역 → 종점 방향 바깥으로 내보내 역 표시를 가리지 않게 한다
+      const dx = at.posX - prev.posX
+      const dy = at.posY - prev.posY
+      const len = Math.hypot(dx, dy) || 1
+      let x = 0
+      let y = 0
+      for (let step = 0; step <= BADGE_MAX_SHIFT; step += 1) {
+        const distance = (BADGE_GAP + step * BADGE_STEP) * mapScale
+        x = at.posX + (dx / len) * distance
+        y = at.posY + (dy / len) * distance
+        const clashes = lineEndBadges.some(other => Math.hypot(other.x - x, other.y - y) < BADGE_STEP * mapScale)
+        if (!clashes) break
+      }
+      lineEndBadges.push({ id: `${line.id}-${isHead ? 'head' : 'tail'}`, line, label, station: at, isHead, x, y })
+    }
+  }
   const selectedStation = stationById.get(selectedStationId) ?? null
   const gameHour = (continuousTick / TICKS_PER_HOUR) % 24
   const isWeekend = Math.floor(continuousTick / TICKS_PER_DAY) % 7 >= 5
@@ -1495,8 +1599,11 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const totalVehicles = state.city.lines.reduce((sum, line) => sum + line.vehicles.length, 0)
   const waitingPassengers = hudSample.waitingPassengers
     || state.stationStats.reduce((sum, stat) => sum + stat.waitingCount, 0)
+  // 라이브 엔진이 있으면 motion 스냅샷의 최신 값을, 없으면 기존 city 스냅샷 값을 그대로 쓴다.
+  const displayCashBalance = liveEconomy?.cashBalance ?? state.city.cashBalance
+  const displayTotalRevenue = liveEconomy?.totalRevenue ?? state.city.totalRevenue
   const goalProgress = state.city.revenueGoal > 0
-    ? Math.min(100, (state.city.totalRevenue / state.city.revenueGoal) * 100)
+    ? Math.min(100, (displayTotalRevenue / state.city.revenueGoal) * 100)
     : 0
   const goalJustReached = state.city.goalsCompleted > 0 && state.city.goalReachedAtTick === currentTick
   const goalDaysRemaining = state.city.goalDeadlineDay - currentGameDay
@@ -1596,9 +1703,13 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                   aria-label="관제실 설정"
                   title="관제실 설정"
                 >
-                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M19.4 13.5a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V19.5a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H4.5a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H10a1.65 1.65 0 0 0 1-1.51V4.5a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V10a1.65 1.65 0 0 0 1.51 1H19.5a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      fill="currentColor"
+                      fillRule="evenodd"
+                      clipRule="evenodd"
+                      d="M10.23 1.45 A10.7 10.7 0 0 1 13.77 1.45 L13.8 4.51 A7.7 7.7 0 0 1 16.02 5.43 L18.21 3.29 A10.7 10.7 0 0 1 20.71 5.79 L18.57 7.98 A7.7 7.7 0 0 1 19.49 10.2 L22.55 10.23 A10.7 10.7 0 0 1 22.55 13.77 L19.49 13.8 A7.7 7.7 0 0 1 18.57 16.02 L20.71 18.21 A10.7 10.7 0 0 1 18.21 20.71 L16.02 18.57 A7.7 7.7 0 0 1 13.8 19.49 L13.77 22.55 A10.7 10.7 0 0 1 10.23 22.55 L10.2 19.49 A7.7 7.7 0 0 1 7.98 18.57 L5.79 20.71 A10.7 10.7 0 0 1 3.29 18.21 L5.43 16.02 A7.7 7.7 0 0 1 4.51 13.8 L1.45 13.77 A10.7 10.7 0 0 1 1.45 10.23 L4.51 10.2 A7.7 7.7 0 0 1 5.43 7.98 L3.29 5.79 A10.7 10.7 0 0 1 5.79 3.29 L7.98 5.43 A7.7 7.7 0 0 1 10.2 4.51 Z M15.7 12A3.7 3.7 0 1 0 8.3 12A3.7 3.7 0 1 0 15.7 12Z"
+                    />
                   </svg>
                 </button>
               )}
@@ -1642,32 +1753,42 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
 
         <div className={`${styles.liveStatus} ${goalJustReached ? styles.goalLiveStatus : ''} ${isGameOver ? styles.stoppedStatus : ''}`}>
           <span className={styles.liveDot} />
-          <b>{isGameOver ? '경영 종료' : goalJustReached ? `${state.city.goalsCompleted}개 목표 완료 · 새 목표 시작` : `${state.city.goalLevel}단계 목표 진행 중`}</b>
+          <b>{isGameOver
+            ? '경영 종료'
+            : state.city.finalGoalReached
+              ? `최종 ${state.city.maxGoalLevel}단계 목표 완료`
+              : goalJustReached
+                ? `${state.city.goalsCompleted}개 목표 완료 · 새 목표 시작`
+                : `${state.city.goalLevel}단계 목표 진행 중`}</b>
         </div>
 
         <section className={`${styles.controlSection} ${styles.goalSection}`}>
           <div className={styles.sectionHeading}><span>★</span><h2>이번 경영 목표</h2></div>
           <div className={`${styles.goalCard} ${goalJustReached ? styles.goalCardReached : ''}`}>
             <div className={styles.goalCardTop}>
-              <span>{state.city.goalLevel}단계 · {state.city.goalDeadlineDay}일차까지</span>
-              <b>{formatMoney(state.city.totalRevenue)} <small>/ {formatMoney(state.city.revenueGoal)}</small></b>
+              <span>{state.city.finalGoalReached
+                ? `최종 ${state.city.maxGoalLevel}단계`
+                : `${state.city.goalLevel}단계 · ${state.city.goalDeadlineDay}일차까지`}</span>
+              <b>{formatMoney(displayTotalRevenue)} <small>/ {formatMoney(state.city.revenueGoal)}</small></b>
             </div>
             <div className={`${styles.goalMeta} ${goalDaysRemaining < 0 ? styles.goalMetaOverdue : ''}`}>
               <span>현재 {currentGameDay}일차</span>
-              <b>{goalDeadlineStatus}</b>
+              <b>{state.city.finalGoalReached ? '완료' : goalDeadlineStatus}</b>
               <span>완료 {state.city.goalsCompleted}개</span>
             </div>
             <div className={styles.progressTrack} aria-label={`매출 목표 ${Math.round(goalProgress)}%`}>
               <i style={{ width: `${goalProgress}%` }} />
             </div>
-            <p>{goalJustReached
-              ? '이전 목표 보상을 지급하고 더 높은 다음 목표를 설정했습니다.'
+            <p>{state.city.finalGoalReached
+              ? '모든 경영 목표를 달성했습니다. 최종 관제 기록을 계속 확장할 수 있습니다.'
+              : goalJustReached
+                ? '이전 목표 보상을 지급하고 더 높은 다음 목표를 설정했습니다.'
               : goalDaysRemaining < 0
                 ? '기한 안에 매출 목표를 달성하지 못해 경영이 종료되었습니다.'
                 : `기한 안에 목표를 달성하면 지원금 ${formatMoney(state.economyRules.goalRewardCash)}과 8,000점을 받고 다음 목표가 열립니다.`}</p>
           </div>
           <div className={styles.economyGrid}>
-            <span><small>운영 자금</small><b className={state.city.cashBalance < 0 ? styles.dangerValue : ''}>{formatMoney(state.city.cashBalance)}</b></span>
+            <span><small>운영 자금</small><b className={displayCashBalance < 0 ? styles.dangerValue : ''}>{formatMoney(displayCashBalance)}</b></span>
             <span><small>시민 행복도</small><b className={happinessRisk ? styles.dangerValue : ''}>{Math.round(state.city.happiness)}%</b></span>
           </div>
           <div className={styles.happinessTrack} aria-label={`시민 행복도 ${Math.round(state.city.happiness)}%`}>
@@ -1863,15 +1984,27 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
             </div>
 
             {selectedVehicle && (
-              <button
-                className={styles.removeVehicleButton}
-                onClick={() => void performAction({
-                  type: 'REMOVE_VEHICLE',
-                  lineId: selectedVehicleLine!.id,
-                  vehicleId: selectedVehicle.id,
-                })}
-                disabled={busy}
-              >선택 차량 제거</button>
+              <>
+                <button
+                  className={`${styles.expressVehicleButton} ${selectedVehicle.isExpress ? styles.expressVehicleButtonActive : ''}`}
+                  onClick={() => void performAction({
+                    type: 'SET_VEHICLE_EXPRESS',
+                    lineId: selectedVehicleLine!.id,
+                    vehicleId: selectedVehicle.id,
+                    express: !selectedVehicle.isExpress,
+                  })}
+                  disabled={busy}
+                >{selectedVehicle.isExpress ? '급행 해제 (완행으로 전환)' : '급행으로 전환 (역 2개씩 정차)'}</button>
+                <button
+                  className={styles.removeVehicleButton}
+                  onClick={() => void performAction({
+                    type: 'REMOVE_VEHICLE',
+                    lineId: selectedVehicleLine!.id,
+                    vehicleId: selectedVehicle.id,
+                  })}
+                  disabled={busy}
+                >선택 차량 제거</button>
+              </>
             )}
           </section>
         )}
@@ -1988,7 +2121,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
             )}
             <div className={styles.hudStats}>
               <span><small>경영 점수</small><b>{state.city.score.toLocaleString('ko-KR')}</b></span>
-              <span><small>운영 자금</small><b className={state.city.cashBalance < 0 ? styles.dangerValue : ''}>{formatMoney(state.city.cashBalance)}</b></span>
+              <span><small>운영 자금</small><b className={displayCashBalance < 0 ? styles.dangerValue : ''}>{formatMoney(displayCashBalance)}</b></span>
               <span><small>행복도</small><b>{Math.round(state.city.happiness)}%</b></span>
               <span><small>대기 승객</small><b>{waitingPassengers}명</b></span>
               <span><small>서비스 · 차량</small><b>{Math.round(serviceScore)} · {totalVehicles}대</b></span>
@@ -2222,6 +2355,24 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
               )
             })}
 
+            {lineEndBadges.map(badge => (
+              <g
+                key={badge.id}
+                transform={`translate(${badge.x} ${badge.y}) scale(${mapScale})`}
+                className={`${styles.lineEndBadge}${badge.line.status === 'SUSPENDED' ? ` ${styles.closedLine}` : ''}`}
+                onPointerDown={event => beginStationLinkDrag(event, badge.station.id, badge.line.id)}
+                onClick={event => event.stopPropagation()}
+                role="button"
+                tabIndex={0}
+                data-map-interactive="true"
+                aria-label={`${lineDisplayName(badge.line.name)} ${badge.isHead ? '시작' : '종점'} — 역으로 끌어 연장`}
+              >
+                <title>{lineDisplayName(badge.line.name)} 종점 · 역으로 끌어다 놓으면 연장됩니다</title>
+                <circle r="1.65" fill={LINE_COLORS[badge.line.color]} />
+                <text textAnchor="middle" y="0.64">{badge.label}</text>
+              </g>
+            ))}
+
             <LiveTransitLayer
               resetKey={cityId}
               city={state.city}
@@ -2312,7 +2463,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
             </p>
             <div className={styles.gameOverStats}>
               <span><small>최종 점수</small><b>{state.city.score.toLocaleString('ko-KR')}</b></span>
-              <span><small>누적 매출</small><b>{formatMoney(state.city.totalRevenue)}</b></span>
+              <span><small>누적 매출</small><b>{formatMoney(displayTotalRevenue)}</b></span>
               <span><small>최종 행복도</small><b>{Math.round(state.city.happiness)}%</b></span>
             </div>
             <div className={styles.gameOverActions}>

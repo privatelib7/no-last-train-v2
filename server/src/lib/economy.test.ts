@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   ECONOMY,
+  MAX_MANAGEMENT_LEVEL,
   calculateTickEconomy,
   isManagementGoalDeadlineMissed,
   managementGoalForLevel,
+  progressionDifficultyForLevel,
   segmentBuildCost,
 } from './economy'
 
@@ -74,6 +76,49 @@ test('경영 목표는 단계마다 매출과 달성 기한을 높여 계속 이
   assert.equal(secondGoal.revenueGoal, 120_000_000)
   assert.equal(secondGoal.goalDeadlineDay, 12)
   assert.equal(secondGoal.goalsCompleted, 2)
+})
+
+test('단계가 오르면 운임은 줄고 운영비 배율은 올라가 자동 레벨업이 느려진다', () => {
+  const first = progressionDifficultyForLevel(1)
+  const tenth = progressionDifficultyForLevel(10)
+  const final = progressionDifficultyForLevel(MAX_MANAGEMENT_LEVEL)
+
+  assert.equal(first.farePerPassenger, ECONOMY.FARE_PER_PASSENGER)
+  assert.equal(first.operatingCostMultiplier, 1)
+  assert.ok(tenth.farePerPassenger < first.farePerPassenger)
+  assert.ok(tenth.operatingCostMultiplier > first.operatingCostMultiplier)
+  assert.ok(final.farePerPassenger <= tenth.farePerPassenger)
+  assert.ok(final.operatingCostMultiplier >= tenth.operatingCostMultiplier)
+})
+
+test('20단계 최종 목표는 한 번만 완료되고 다음 틱에 반복 보상하지 않는다', () => {
+  const finalGoal = managementGoalForLevel(MAX_MANAGEMENT_LEVEL)
+  const reached = calculateTickEconomy({
+    ...baseInput,
+    transported: 100,
+    totalRevenue: finalGoal.revenueGoal - progressionDifficultyForLevel(MAX_MANAGEMENT_LEVEL).farePerPassenger * 100,
+    revenueGoal: finalGoal.revenueGoal,
+    goalReachedAtTick: 999,
+  })
+
+  assert.equal(reached.goalReachedNow, true)
+  assert.equal(reached.completedGoalLevel, MAX_MANAGEMENT_LEVEL)
+  assert.equal(reached.goalLevel, MAX_MANAGEMENT_LEVEL)
+  assert.equal(reached.goalsCompleted, MAX_MANAGEMENT_LEVEL)
+  assert.equal(reached.finalGoalReached, true)
+
+  const next = calculateTickEconomy({
+    ...baseInput,
+    transported: 100,
+    cashBalance: reached.cashBalance,
+    totalRevenue: reached.totalRevenue,
+    revenueGoal: reached.revenueGoal,
+    goalReachedAtTick: reached.goalReachedAtTick,
+  })
+  assert.equal(next.goalReachedNow, false)
+  assert.equal(next.goalsCompleted, MAX_MANAGEMENT_LEVEL)
+  assert.equal(next.finalGoalReached, true)
+  assert.ok(next.cashBalance < reached.cashBalance + ECONOMY.GOAL_REWARD_CASH)
 })
 
 test('기존 단일 목표 달성 도시는 보상을 중복 지급하지 않고 다음 목표로 승계한다', () => {

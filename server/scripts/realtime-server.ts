@@ -28,6 +28,17 @@ import {
   REDIS_MOTION_UPDATE_CHANNEL,
   type CityMotionBase,
 } from '../src/lib/city-motion'
+import {
+  createLiveCityEngine,
+  advanceFrame,
+  runEconomicTickAndFlush,
+  flushLiveCityEngine,
+  refreshLiveEngineTopology,
+  renderLiveMotionSnapshot,
+  warmLocalMotionCache,
+  publishLiveMotionBase,
+  type LiveCityEngine,
+} from '../src/lib/live-city-engine'
 import { getRedisSubscriberClient } from '../src/lib/redis-client'
 import { buildCityStateSnapshot } from '../src/lib/city-state'
 import { SIM } from '../src/types/game'
@@ -42,10 +53,43 @@ const HEARTBEAT_INTERVAL_MS = SIM.LIVE_TICK_MS
 const WS_CATCHUP_MAX_TICKS = 20
 const SYNC_CONCURRENCY = 4
 
+/** 라이브 엔진 경제 틱(승객 생성/정책/SimTick 기록 + DB flush) 주기 — 기존 "경제 틱" 주기와 동일 */
+const ECONOMIC_TICK_MS = SIM.LIVE_TICK_MS
+
 type ConnState = { cityId: string | null; playerId: string | null }
 
 const connState = new Map<WebSocket, ConnState>()
 const citySubscribers = new Map<string, Set<WebSocket>>()
+/** 구독자가 있는 도시의 인메모리 라이브 엔진 — 100ms 위치/탑승/매출, ~3초 DB flush를 스스로 관리한다 */
+const liveEngines = new Map<string, LiveCityEngine>()
+const liveEngineBootstrapping = new Set<string>()
+
+async function ensureLiveEngine(cityId: string) {
+  if (liveEngines.has(cityId) || liveEngineBootstrapping.has(cityId)) return
+  liveEngineBootstrapping.add(cityId)
+  try {
+    const engine = await createLiveCityEngine(cityId)
+    // 부트스트랩 도중 마지막 구독자가 나갔으면 굳이 엔진을 유지할 필요 없다.
+    if (engine && citySubscribers.get(cityId)?.size) {
+      liveEngines.set(cityId, engine)
+    }
+  } catch (err) {
+    console.error(`[realtime] live engine bootstrap failed for ${cityId}`, err)
+  } finally {
+    liveEngineBootstrapping.delete(cityId)
+  }
+}
+
+async function teardownLiveEngine(cityId: string) {
+  const engine = liveEngines.get(cityId)
+  if (!engine) return
+  liveEngines.delete(cityId)
+  try {
+    await flushLiveCityEngine(engine)
+  } catch (err) {
+    console.error(`[realtime] live engine flush-on-teardown failed for ${cityId}`, err)
+  }
+}
 
 function subscribersFor(cityId: string): Set<WebSocket> {
   let set = citySubscribers.get(cityId)
@@ -64,6 +108,7 @@ function unsubscribe(ws: WebSocket) {
   if (set && set.size === 0) {
     citySubscribers.delete(state.cityId)
     invalidateCityMotionCache(state.cityId)
+    void teardownLiveEngine(state.cityId)
   }
   state.cityId = null
 }
@@ -121,12 +166,25 @@ function pushMotionSnapshotToCity(cityId: string, snapshot: ReturnType<typeof re
   }
 }
 
-/** 캐시 기준 좌표만 밀어준다 — 매 사이클 DB/틱 처리 없음 */
+/**
+ * 라이브 엔진이 있는 도시는 그 자리에서 100ms만큼 전진(위치·탑승·매출 확정)시키고
+ * 바로 렌더해서 push한다 — DB 호출 없음. 엔진이 아직 없는(부트스트랩 중이거나 막 구독된)
+ * 도시는 기존처럼 캐시 기준 프리뷰 좌표만 밀어준다.
+ */
 async function broadcastMotionPush() {
   const cityIds = subscribedCityIds()
+  const now = Date.now()
   await mapPool(cityIds, 8, async cityId => {
     if (!citySubscribers.get(cityId)?.size) return
     try {
+      const engine = liveEngines.get(cityId)
+      if (engine) {
+        advanceFrame(engine, now)
+        const snapshot = renderLiveMotionSnapshot(engine, now)
+        pushMotionSnapshotToCity(cityId, snapshot)
+        warmLocalMotionCache(engine, now)
+        return
+      }
       const snapshot = await buildCityMotionSnapshot(cityId)
       if (snapshot) pushMotionSnapshotToCity(cityId, snapshot)
     } catch (err) {
@@ -153,6 +211,9 @@ function subscribeMotionUpdates() {
       return
     }
     if (!citySubscribers.get(base.cityId)?.size) return
+    // 라이브 엔진이 이미 100ms 권위 좌표를 밀고 있으면 DB/프리뷰 스냅샷으로
+    // 화면을 되돌리지 않는다. 되돌리면 차량이 잠깐 뒤로 갔다가 다시 맞춰진다.
+    if (liveEngines.has(base.cityId)) return
     setCachedMotionBase(base)
     try {
       pushMotionSnapshotToCity(base.cityId, renderCityMotionSnapshot(base))
@@ -162,11 +223,23 @@ function subscribeMotionUpdates() {
   })
 }
 
-/** 틱을 따라잡고 모션 베이스를 원자적으로 교체한다(push 중 캐시 공백 없음) */
+/**
+ * 틱을 따라잡고 모션 베이스를 원자적으로 교체한다(push 중 캐시 공백 없음).
+ * 라이브 엔진이 있는 도시는 스스로 경제 틱을 굴리므로 틱 따라잡기는 필요 없지만,
+ * 노선 건설·역 건설·차량 배차 같은 액션은 별 프로세스(nlt-server)가 DB에 직접 쓰고
+ * 엔진에 알려주는 채널이 없다 — 그래서 같은 주기로 구조(노선/역/차량 목록)만 다시
+ * 읽어 반영한다. 이게 없으면 방금 만든 노선/방금 배차한 차량이 엔진 재부트(=페이지
+ * 새로고침으로 재구독) 전까지 안 움직인다.
+ */
 async function broadcastMotionSync() {
   const cityIds = subscribedCityIds()
   await mapPool(cityIds, SYNC_CONCURRENCY, async cityId => {
     try {
+      const engine = liveEngines.get(cityId)
+      if (engine) {
+        await refreshLiveEngineTopology(engine)
+        return
+      }
       await syncCityClock(cityId, WS_CATCHUP_MAX_TICKS)
       await refreshCityMotionBase(cityId)
     } catch (err) {
@@ -182,7 +255,9 @@ async function broadcastCityState() {
     if (!sockets || sockets.size === 0) return
     try {
       // 건설/배차 반영: 캐시를 비우지 않고 새 베이스로 교체한 뒤 city 상태를 보낸다.
-      await refreshCityMotionBase(cityId)
+      // 라이브 엔진이 있는 도시는 건드리지 않는다 — DB는 최대 ~3초 지연될 수 있어
+      // 여기서 다시 읽으면 이미 100ms 프레임으로 앞서 있는 캐시를 오히려 되돌리게 된다.
+      if (!liveEngines.has(cityId)) await refreshCityMotionBase(cityId)
       const snapshot = await buildCityStateSnapshot(cityId, null)
       if (!snapshot) return
       for (const ws of sockets) {
@@ -243,6 +318,7 @@ wss.on('connection', ws => {
       subscribersFor(cityId).add(ws)
       void sendMotionTo(ws, cityId)
       void sendCityStateTo(ws, cityId, player.id)
+      void ensureLiveEngine(cityId)
       return
     }
 
@@ -291,11 +367,31 @@ setInterval(() => {
     .finally(() => { cityRunning = false })
 }, CITY_INTERVAL_MS)
 
+/**
+ * 라이브 엔진의 "경제 틱" — 승객 생성/정책 평가/SimTick 기록 + 누적된 차량·승객·잔고
+ * 변경분을 DB에 배치 flush한다. 기존 3초 경제 틱과 같은 주기, 대신 여기서는 위치·탑승이
+ * 이미 100ms 프레임에서 확정돼 있으므로 그 나머지만 처리한다.
+ */
+let economicTickRunning = false
+setInterval(() => {
+  if (economicTickRunning) return
+  economicTickRunning = true
+  const now = Date.now()
+  const engines = [...liveEngines.entries()]
+  Promise.all(engines.map(([cityId, engine]) =>
+    runEconomicTickAndFlush(engine)
+      .then(() => publishLiveMotionBase(engine, now))
+      .catch(err => console.error(`[realtime] economic tick failed for ${cityId}`, err)),
+  ))
+    .catch(err => console.error('[realtime] economic tick batch failed', err))
+    .finally(() => { economicTickRunning = false })
+}, ECONOMIC_TICK_MS)
+
 let heartbeatRunning = false
 setInterval(() => {
   if (heartbeatRunning) return
   heartbeatRunning = true
-  tickRecentlyActiveCities()
+  tickRecentlyActiveCities(new Set(liveEngines.keys()))
     .catch(err => console.error('[realtime] heartbeat failed', err))
     .finally(() => { heartbeatRunning = false })
 }, HEARTBEAT_INTERVAL_MS)

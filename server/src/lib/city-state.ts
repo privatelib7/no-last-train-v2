@@ -1,6 +1,12 @@
 import { db } from './db'
 import { SIM } from '@/types/game'
-import { ECONOMY, resolveManagementGoal } from './economy'
+import {
+  ECONOMY,
+  MAX_MANAGEMENT_LEVEL,
+  isFinalManagementGoalReached,
+  progressionDifficultyForLevel,
+  resolveManagementGoal,
+} from './economy'
 import { loadStationWaitingCounts } from './city-motion'
 
 // /api/cities/[id] GET과 WebSocket 실시간 브로드캐스트가 공유하는 "도시 전체 상태" 조합 로직.
@@ -46,13 +52,17 @@ export async function buildCityStateSnapshot(cityId: string, playerId: string | 
   const elapsedGameHours = elapsedMs / SIM.LIVE_TICK_MS / SIM.TICKS_PER_GAME_HOUR
   const isOwner = playerId != null && city.ownerPlayerId === playerId
   const managementGoal = resolveManagementGoal(city.revenueGoal, city.goalReachedAtTick)
+  const finalGoalReached = isFinalManagementGoalReached(city.revenueGoal, city.totalRevenue)
+  const difficulty = progressionDifficultyForLevel(managementGoal.level)
 
   return {
     city: {
       ...city,
       goalLevel: managementGoal.level,
       goalDeadlineDay: managementGoal.deadlineDay,
-      goalsCompleted: managementGoal.level - 1,
+      goalsCompleted: finalGoalReached ? MAX_MANAGEMENT_LEVEL : managementGoal.level - 1,
+      maxGoalLevel: MAX_MANAGEMENT_LEVEL,
+      finalGoalReached,
     },
     elapsedGameHours,
     stationStats,
@@ -76,7 +86,8 @@ export async function buildCityStateSnapshot(cityId: string, playerId: string | 
       criticalHappiness: ECONOMY.CRITICAL_HAPPINESS,
       gameOverGraceTicks: ECONOMY.GAME_OVER_GRACE_TICKS,
       goalRewardCash: ECONOMY.GOAL_REWARD_CASH,
-      farePerPassenger: ECONOMY.FARE_PER_PASSENGER,
+      farePerPassenger: difficulty.farePerPassenger,
+      operatingCostMultiplier: difficulty.operatingCostMultiplier,
     },
   }
 }
