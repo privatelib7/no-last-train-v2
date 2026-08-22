@@ -14,7 +14,6 @@ node_modules
 dist
 dist-ssr
 .next
-.open-next
 .vite
 *.local
 *.tsbuildinfo
@@ -47,8 +46,6 @@ deploy/*
 *.njsproj
 *.sln
 *.sw?
-.wrangler
-.dev.vars
 server/src/generated
 
 # 재배포가 제한된 오디오 에셋 — 빌드 전에 scripts/fetch-audio-assets.mjs가 내려받는다

@@ -35,6 +35,8 @@ function modeKey(mode: GameLine['mode']): 'SUBWAY' | 'BUS' {
 }
 
 // 서버 vehicle-motion.ts와 같은 계산식이어야 한다. physics는 motion API에서 받는다.
+// min/max로 클램프하면 실제 거리와 어긋난 구간 길이 때문에 차량이 순간이동하듯 보이므로
+// 클램프 없이 실거리 기준 시간을 그대로 쓴다.
 export function segmentTravelMinutes(
   from: Station,
   to: Station,
@@ -44,10 +46,8 @@ export function segmentTravelMinutes(
   const rules = resolvePhysics(physics)
   const key = modeKey(mode)
   const distance = Math.hypot(to.posX - from.posX, to.posY - from.posY)
-  const limits = rules.durationLimits[key]
   const rawMinutes = distance / rules.speed[key]
-  const clamped = Math.max(limits.min, Math.min(limits.max, rawMinutes))
-  return Math.round(clamped * 2) / 2
+  return Math.round(rawMinutes * 2) / 2
 }
 
 export function stationDwellMinutes(mode: GameLine['mode'], physics?: TransitMotionPhysics | null): number {

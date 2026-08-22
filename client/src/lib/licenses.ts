@@ -116,18 +116,6 @@ export const LICENSE_GROUPS: LicenseGroup[] = [
     title: '배포 · 개발 도구',
     items: [
       {
-        name: 'OpenNext for Cloudflare 1.20.2',
-        usage: 'Next.js 서버의 Cloudflare Workers 배포',
-        license: 'MIT',
-        links: [{ label: 'GitHub', url: 'https://github.com/opennextjs/opennextjs-cloudflare' }],
-      },
-      {
-        name: 'Wrangler 4.120.0',
-        usage: 'Cloudflare 배포 CLI',
-        license: 'MIT / Apache-2.0',
-        links: [{ label: 'GitHub', url: 'https://github.com/cloudflare/workers-sdk' }],
-      },
-      {
         name: 'TypeScript 5.9.3 / 6.0.3',
         usage: '타입 검사와 빌드',
         license: 'Apache-2.0',

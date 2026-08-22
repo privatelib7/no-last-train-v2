@@ -84,6 +84,12 @@ const ActionSchema = z.discriminatedUnion('type', [
     inService: z.boolean(),
   }),
   z.object({
+    type: z.literal('SET_VEHICLE_EXPRESS'),
+    lineId: z.string(),
+    vehicleId: z.string(),
+    express: z.boolean(),
+  }),
+  z.object({
     type: z.literal('TRANSFER_VEHICLE'),
     lineId: z.string(),
     vehicleId: z.string(),
@@ -657,6 +663,22 @@ export async function POST(
       }),
     })
     const message = `${line.name} 차량 운행을 시작했습니다.`
+    await db.activityLog.create({ data: { cityId: id, playerId: auth.player.id, message } })
+    return NextResponse.json({ message, vehicle: updatedVehicle })
+  }
+
+  if (action.type === 'SET_VEHICLE_EXPRESS') {
+    if (vehicle.isExpress === action.express) {
+      const already = action.express ? '이미 급행입니다.' : '이미 완행입니다.'
+      return NextResponse.json({ message: `${line.name} 차량은 ${already}`, vehicle })
+    }
+    const updatedVehicle = await db.vehicle.update({
+      where: { id: vehicle.id },
+      data: { isExpress: action.express },
+    })
+    const message = action.express
+      ? `${line.name} 차량을 급행으로 전환했습니다. (역 2개씩 정차)`
+      : `${line.name} 차량을 완행으로 전환했습니다.`
     await db.activityLog.create({ data: { cityId: id, playerId: auth.player.id, message } })
     return NextResponse.json({ message, vehicle: updatedVehicle })
   }

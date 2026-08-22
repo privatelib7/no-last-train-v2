@@ -110,7 +110,7 @@ npm run dev:logs
 
 1. PostgreSQL · Redis 기동 (`DATABASE_URL`, `REDIS_URL`을 `server/.env`에 설정)
 2. 프론트 빌드 후 nginx 문서 루트로 동기화
-3. API: `npm run build:next -w no-last-train-server` 후 PM2 `nlt-server`
+3. API: `npm run build:next -w no-last-train-server` 후 PM2 `nlt-server` (`next start`, `NODE_ENV=production`)
 4. 실시간: PM2 `nlt-realtime` → `server` cwd에서  
    `node --env-file-if-exists=.env --import tsx scripts/realtime-server.ts`  
    (기본 `REALTIME_PORT=3012`)
@@ -138,7 +138,7 @@ npm run dev:logs
 | `npm run dev:logs` | 프론트·API 실행 및 로컬 로그 수집 |
 | `npm run build:client` | 프론트 프로덕션 빌드 |
 | `npm run start:client` | 프론트 프로덕션 실행 |
-| `npm run build:server` | 백엔드 프로덕션 빌드 (Cloudflare 경로) |
+| `npm run build:server` | API 프로덕션 빌드 (`next build`) |
 | `npm run start:server` | API 프로덕션 실행 |
 | `cd server && npx tsx --env-file-if-exists=.env scripts/realtime-server.ts` | 실시간 WebSocket 서버 |
 
