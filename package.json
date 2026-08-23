@@ -22,6 +22,7 @@
     "db:generate": "npm run db:generate -w no-last-train-server",
     "db:push": "npm run db:push -w no-last-train-server",
     "db:seed": "npm run db:seed -w no-last-train-server",
-    "data:demand": "npm run data:demand -w no-last-train-server"
+    "data:demand": "npm run data:demand -w no-last-train-server",
+    "data:map": "npm run data:map -w no-last-train-server"
   }
 }

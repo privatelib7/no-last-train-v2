@@ -168,7 +168,8 @@ async function resolveBusanFile(year) {
   return found
 }
 
-async function loadBusanRides({ year, refresh, onProgress }) {
+// build-map-profile.mjs가 부산 역을 같은 분류기에 태우려고 쓴다.
+export async function loadBusanRides({ year, refresh, onProgress }) {
   const file = await resolveBusanFile(year)
   onProgress?.(`${file.title} (${file.mediaCnt}행) 내려받는 중`)
   const buf = await cached(`busan-open-data/${file.title}.csv`, refresh, async () => {
