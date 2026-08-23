@@ -114,7 +114,6 @@
   --gp-land-alt: #eeeae1;
   --gp-land-stroke: #b9c3bd;
   --gp-river: #b7d7e1;
-  --gp-river-soft: rgba(108, 161, 190, 0.18);
   --gp-mountains: #d8dfd1;
   --gp-district: #a1a49b;
   --gp-person: #3f5360;
@@ -1986,15 +1985,10 @@
   fill: var(--gp-sea);
 }
 
-.busanLand,
-.yeongdo {
+.land {
   fill: var(--gp-land);
   stroke: var(--gp-land-stroke);
   stroke-width: 0.45;
-}
-
-.yeongdo {
-  fill: var(--gp-land-alt);
 }
 
 .waitingCount {
@@ -2015,59 +2009,57 @@
   fill: #c23b2a;
 }
 
-.zone_residential {
-  fill: #55a96a;
-  /* 밤에는 장막이 색을 깎으므로 그만큼 진하게 — 주거/상업/공업이 밤에도 구분된다 */
-  fill-opacity: calc(0.12 + var(--night, 0) * 0.42);
-  stroke: #55a96a;
-  stroke-width: 0.2;
-  stroke-opacity: calc(0.25 + var(--night, 0) * 0.5);
+.district {
+  fill: var(--d);
+  /* 밤에는 장막이 색을 깎으므로 그만큼 진하게 — 여섯 종류가 밤에도 구분된다 */
+  fill-opacity: calc(var(--d-alpha) + var(--night, 0) * 0.42);
+  stroke: var(--d);
+  /* 구역끼리 경계를 공유한다 → 안쪽 경계는 이웃이 한 번씩 그려 두 배로 진해진다.
+     의도한 것이다(경계가 또렷해진다). 그래서 예전 zone(0.2)의 절반만 쓴다 */
+  stroke-width: 0.12;
+  stroke-opacity: calc(0.3 + var(--night, 0) * 0.5);
   pointer-events: none;
 }
 
-.zone_commercial {
-  fill: #3f8edb;
-  /* 밤에는 장막이 색을 깎으므로 그만큼 진하게 — 주거/상업/공업이 밤에도 구분된다 */
-  fill-opacity: calc(0.1 + var(--night, 0) * 0.42);
-  stroke: #3f8edb;
-  stroke-width: 0.2;
-  stroke-opacity: calc(0.25 + var(--night, 0) * 0.5);
+/* 노선 5색(#E9783C 19° · #E1B735 45° · #55A96A 133° · #3F8EDB 209° · #8E6CC1 267°)과
+   헷갈리면 안 된다. 색상환의 빈 구간에 놓고 채도·명도까지 벌렸다.
+   예전 .zone_* 는 노선의 초록·파랑·노랑을 «그대로» 재사용하고 있었다. */
+.district_RESIDENTIAL { --d: #a79c8c; --d-alpha: 0.16; }  /* 웜그레이 — 면적이 가장 넓어 일부러 무채색에 가깝게 */
+.district_COMMERCIAL  { --d: #1f8a8a; --d-alpha: 0.11; }  /* 틸 171° — 노선 파랑과 초록 사이 최대 간격 */
+.district_TOURIST     { --d: #b4478f; --d-alpha: 0.10; }  /* 마젠타 322° — 보라와 주황 사이 */
+.district_INDUSTRIAL  { --d: #8a6234; --d-alpha: 0.12; }  /* 엄버 — 색상은 주황 계열이나 채도·명도가 멀어 갈색으로 읽힌다 */
+.district_HUB         { --d: #55627d; --d-alpha: 0.12; }  /* 슬레이트 — 채도를 죽여 노선 파랑과 갈라놓는다 */
+.district_GREEN       { --d: #7e9455; --d-alpha: 0.14; }  /* 모스 82° — 노선 초록보다 일부러 탁하게 */
+
+.relief {
+  /* 고도대는 낮은 밴드부터 겹쳐 그린다 → 높은 곳이 저절로 진해진다.
+     장막 아래라 밤에는 깎이므로 그만큼 올린다 — .district와 같은 방식이다 */
+  fill: var(--gp-mountains);
+  opacity: calc(0.5 + var(--night, 0) * 0.25);
   pointer-events: none;
 }
 
-.zone_industrial {
-  fill: #e1b735;
-  /* 밤에는 장막이 색을 깎으므로 그만큼 진하게 — 주거/상업/공업이 밤에도 구분된다 */
-  fill-opacity: calc(0.13 + var(--night, 0) * 0.42);
-  stroke: #e1b735;
-  stroke-width: 0.2;
-  stroke-opacity: calc(0.25 + var(--night, 0) * 0.5);
+.contours {
+  /* 지형 위에 얹는 «주석»이라 굵기는 화면 기준이다(GamePage가 mapScale을 곱한다).
+     지형 기준으로 두면 확대할수록 얇아져, 지형을 보려고 확대한 순간 사라진다 */
+  fill: none;
+  stroke: var(--gp-land-stroke);
+  stroke-opacity: calc(0.45 + var(--night, 0) * 0.35);
+  stroke-linejoin: round;
+  stroke-linecap: round;
   pointer-events: none;
 }
+
 
 .mapGrid {
   fill: url(#map-grid);
   pointer-events: none;
 }
 
-.nakdongRiver,
-.suyeongRiver {
-  fill: none;
-  stroke: var(--gp-river);
-  stroke-width: 3.8;
-  stroke-linecap: round;
+.water {
+  fill: var(--gp-river);
+  stroke: none;
   opacity: 0.9;
-  pointer-events: none;
-}
-
-.suyeongRiver {
-  stroke-width: 1.8;
-  opacity: 0.72;
-}
-
-.mountains {
-  fill: var(--gp-mountains);
-  opacity: 0.58;
   pointer-events: none;
 }
 
@@ -2116,13 +2108,6 @@
 @keyframes citizenWaitPulse {
   from { opacity: 0.56; }
   to { opacity: 1; }
-}
-
-.river {
-  fill: none;
-  stroke: var(--gp-river-soft);
-  stroke-width: 7;
-  stroke-linecap: round;
 }
 
 .lineShadow,
@@ -2236,13 +2221,6 @@
 
 @keyframes selectionSpin {
   to { stroke-dashoffset: -8; }
-}
-
-.stationIcon {
-  font-size: 2.05px;
-  font-weight: 900;
-  fill: var(--gp-station-stroke);
-  pointer-events: none;
 }
 
 .stationLabelLayer {
@@ -2551,28 +2529,13 @@
   gap: 4px;
 }
 
-.zoneMarkResidential,
-.zoneMarkCommercial,
-.zoneMarkIndustrial {
+.districtMark {
   display: inline-block;
   width: 10px;
   height: 10px;
   border-radius: 3px;
-}
-
-.zoneMarkResidential {
-  background: rgba(85, 169, 106, 0.45);
-  border: 1px solid #55a96a;
-}
-
-.zoneMarkCommercial {
-  background: rgba(63, 142, 219, 0.4);
-  border: 1px solid #3f8edb;
-}
-
-.zoneMarkIndustrial {
-  background: rgba(225, 183, 53, 0.45);
-  border: 1px solid #c9a22e;
+  background: color-mix(in srgb, var(--d) 42%, transparent);
+  border: 1px solid var(--d);
 }
 
 .regularStationMark,

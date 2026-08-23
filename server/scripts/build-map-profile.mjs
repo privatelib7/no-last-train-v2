@@ -82,7 +82,11 @@ const MAP_TUNING = {
   // — 따로 두면 좌표계가 둘이 되고, 어긋나는 순간 역이 물 위에 뜬다. 1칸 ≈ 117m.
   GRID: 256,
   // 정점 격자. 공유 경계 정합의 근거이므로 도시별로 다르게 두지 않는다.
-  SNAP: 0.02,
+  // 0.1칸 = 30m로, 분류 격자 한 칸(117m)보다 훨씬 잘아 눈에 띄는 손실이 없다.
+  // 좌표를 소수 한 자리로 줄여 번들이 가벼워진다.
+  SNAP: 0.1,
+  // 윤곽 단순화 허용 오차(칸). 공유 경계는 호 단위로 «양쪽이 같은 값»을 써야 한다.
+  SHAPE_EPS: 0.4,
   // 서울 중앙값 고도가 40m라 50m선을 그리면 시가지 전체가 실뱀처럼 뒤덮인다(그것만 102KB).
   // 첫 고도대와 같은 100m부터 그려야 «산이 여기 있다»는 그림이 된다.
   CONTOUR_M: [100, 200, 400, 800],
@@ -543,7 +547,11 @@ const TURN_ORDER = [
   (dx, dy) => [-dx, -dy],  // 되돌아가기
 ]
 
-function traceMask(inside, N) {
+function traceMask(predicate, N) {
+  // 격자 밖은 «바깥»이다. 이 판정을 호출자에게 맡기면 grid[jy*N+ix] !== WATER 같은 술어가
+  // 범위 밖에서 undefined !== -1 → true가 돼 맵 전체가 땅으로 둔갑한다 — 실제로 해안선이
+  // 그렇게 통째로 사라졌다. 여기서 한 번 막으면 어떤 호출자도 그 실수를 못 한다.
+  const inside = (ix, jy) => ix >= 0 && ix < N && jy >= 0 && jy < N && predicate(ix, jy)
   const key = (i, j) => i * (N + 1) + j
   const edges = new Map()
   const push = (a, b) => { const l = edges.get(a); if (l) l.push(b); else edges.set(a, [b]) }
@@ -733,7 +741,12 @@ function loopsToPath(loops, N, pinned, { eps, passes, snap }) {
   return subpaths.join('')
 }
 
-const round2 = v => Math.round(v * 100) / 100
+// 좌표 자릿수는 스냅 격자에서 따라온다 — 격자보다 잘게 적어 봐야 파일만 커진다.
+const COORD_DECIMALS = MAP_TUNING.SNAP >= 0.1 ? 1 : 2
+const round2 = v => {
+  const f = 10 ** COORD_DECIMALS
+  return Math.round(v * f) / f
+}
 
 // 등고선: 선형 보간 marching squares 후 끝점을 이어 폴리라인으로 붙인다.
 // 조각마다 M을 찍으면 경로 문자열이 몇 배로 불어난다.
@@ -923,7 +936,7 @@ async function buildCity(cityKey, { refresh, days, year, onProgress }) {
 
   // 6. 벡터화. 구역·해안선·내수면이 «같은 격자·같은 고정점»에서 나오므로 서로 어긋나지 않는다.
   const pinned = junctionCorners(grid, N)
-  const shape = { eps: 0.3, passes: 2, snap: MAP_TUNING.SNAP }
+  const shape = { eps: MAP_TUNING.SHAPE_EPS, passes: 2, snap: MAP_TUNING.SNAP }
   const { comp, list } = components(grid, N)
 
   const usedNames = new Set()
@@ -962,7 +975,7 @@ async function buildCity(cityKey, { refresh, days, year, onProgress }) {
   const water = loopsToPath(
     traceMask((ix, jy) => grid[jy * N + ix] === WATER && cityMask[jy * N + ix] === 1, N), N, pinned, shape)
 
-  const bandShape = { eps: 0.5, passes: 2, snap: MAP_TUNING.SNAP }
+  const bandShape = { eps: MAP_TUNING.SHAPE_EPS * 1.6, passes: 2, snap: MAP_TUNING.SNAP }
   const reliefBands = MAP_TUNING.RELIEF_M.map(minM => ({
     minM,
     d: loopsToPath(traceMask((ix, jy) => elev[jy * N + ix] >= minM && cityMask[jy * N + ix] === 1, N), N, null, bandShape),

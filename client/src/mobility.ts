@@ -158,16 +158,16 @@ function deterministicLandPoint(map: CityMapDef, seed: number, index: number, sa
     if (map.isLand(point.x, point.y)) return point
   }
 
-  const anchor = { x: map.anchor[0], y: map.anchor[1] }
-  if (map.isLand(anchor.x, anchor.y)) return anchor
-
+  // anchor(손으로 찍어 둔 «반드시 땅인 좌표») 폴백은 없앴다. isLand가 비트마스크 조회라
+  // 이 격자 훑기가 2401번 시프트·마스크면 끝나고, 어떤 실제 도시에서도 실패하지 않는다.
+  // 지오메트리를 다시 구울 때마다 손으로 맞춰 줘야 하는 상수를 남길 이유가 없다.
   for (let y = 2; y <= 98; y += 2) {
     for (let x = 2; x <= 98; x += 2) {
       if (map.isLand(x, y)) return { x, y }
     }
   }
 
-  return anchor
+  return { x: 50, y: 50 }
 }
 
 type CitizenAppearance = {

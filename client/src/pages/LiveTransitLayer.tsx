@@ -323,9 +323,10 @@ function LiveTransitLayer({
 
   return (
     <>
+      {/* 해안선 클립은 뺐다. 시민 좌표는 이제 랜드마스크로 보장되고, 실측 해안선은 정점이
+          수천 개라 매 프레임 48개 원을 거기에 클립하면 그것만으로 비싸다. */}
       <g
         className={styles.peopleLayer}
-        clipPath="url(#city-land-clip)"
         aria-label={`외부에서 역과 정류장으로 이동하는 시민 ${movingCitizens.length}명`}
       >
         {movingCitizens.map(citizen => {

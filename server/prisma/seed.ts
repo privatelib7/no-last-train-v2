@@ -16,7 +16,8 @@ const BUSAN_LAYOUT = {
 
 const LINE_LAYOUT = {
   '1호선': { depotX: 55, depotY: 37, stations: ['북항역', '중앙역', '서면역', '동래역'] },
-  '2호선': { depotX: 79, depotY: 48, stations: ['사상역', '서면역', '광안리역', '센텀역', '해운대역'] },
+  // 해운대 앞바다가 아니라 뭍이어야 한다 — 실측 지형으로 바꾼 뒤 (79,48)은 물이 됐다.
+  '2호선': { depotX: 78, depotY: 45, stations: ['사상역', '서면역', '광안리역', '센텀역', '해운대역'] },
 } as const
 
 const SEOUL_LAYOUT = {
@@ -126,7 +127,7 @@ const BUS_LAYOUTS: Record<string, {
   BUSAN: {
     stop: { name: '광복정류장', posX: 44, posY: 76 },
     route: ['사상역', '광복정류장', '중앙역'],
-    depotX: 52, depotY: 70,
+    depotX: 48, depotY: 69,  // (52,70)은 실측 지형에서 물이다
   },
 }
 
