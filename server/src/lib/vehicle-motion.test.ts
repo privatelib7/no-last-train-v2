@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   advanceVehicleMotion,
-  spreadBunchedVehicles,
+  headwayHoldFactors,
   expressStopStationIds,
   reconcileVehicleForInsertedStation,
   segmentTravelMinutes,
@@ -209,25 +209,48 @@ test('정차 중이거나 다른 구간을 지나는 차량은 삽입에 영향�
   )
   assert.equal(unrelatedSegment, null)
 })
-test('같은 위치·방향으로 겹친 차량만 배차 간격만큼 뒤로 물린다', () => {
-  const bunched = [
-    { currentStationId: 'a', direction: 1, segmentProgressMinutes: -2, headwayMinutes: 6 },
-    { currentStationId: 'a', direction: 1, segmentProgressMinutes: -2, headwayMinutes: 6 },
-    { currentStationId: 'a', direction: 1, segmentProgressMinutes: -2, headwayMinutes: 6 },
-  ]
-  // 겹친 순번만큼 누적해 물린다 — 뒤 두 대가 다시 서로 붙으면 안 된다
-  assert.equal(spreadBunchedVehicles(bunched).length, 2)
-  assert.deepEqual(bunched.map(v => v.segmentProgressMinutes), [-2, -8, -14])
+const LINE: MotionStation[] = [
+  { id: 'a', posX: 0, posY: 0 },
+  { id: 'b', posX: 20, posY: 0 },
+  { id: 'c', posX: 40, posY: 0 },
+]
+const at = (id: string, station: string, progress: number, direction = 1) =>
+  ({ id, currentStationId: station, direction, segmentProgressMinutes: progress })
 
-  // 반대 방향이거나 이미 벌어진 차량은 건드리지 않는다
-  const spread = [
-    { currentStationId: 'a', direction: 1, segmentProgressMinutes: -2, headwayMinutes: 6 },
-    { currentStationId: 'a', direction: -1, segmentProgressMinutes: -2, headwayMinutes: 6 },
-    { currentStationId: 'a', direction: 1, segmentProgressMinutes: 3, headwayMinutes: 6 },
-  ]
-  assert.equal(spreadBunchedVehicles(spread).length, 0)
-  assert.deepEqual(spread.map(v => v.segmentProgressMinutes), [-2, -2, 3])
+test('한 대뿐이면 늦출 이유가 없다', () => {
+  assert.equal(headwayHoldFactors(LINE, 'SUBWAY', [at('v1', 'a', 0)]).size, 0)
+})
 
-  // 한 번 벌어지고 나면 다시 부르더라도 그대로 둔다
-  assert.equal(spreadBunchedVehicles(bunched).length, 0)
+test('같은 자리에 겹친 차량은 뒤차만 늦춰 떼어놓는다', () => {
+  const bunched = [at('v1', 'a', 0), at('v2', 'a', 0), at('v3', 'a', 0)]
+  const factors = headwayHoldFactors(LINE, 'SUBWAY', bunched)
+  // 셋 중 맨 앞(간격이 한 바퀴만큼 열린 차량) 하나는 정상 속도로 남는다
+  assert.equal(factors.size, 2)
+  for (const f of factors.values()) assert.ok(f > 0 && f < 1, `배수 ${f}`)
+})
+
+test('앞차와 가까울수록 더 많이 늦춘다 (0.55 아래로는 안 내려간다)', () => {
+  const tight = headwayHoldFactors(LINE, 'SUBWAY', [at('v1', 'a', 0), at('v2', 'a', 0.5)])
+  const loose = headwayHoldFactors(LINE, 'SUBWAY', [at('v1', 'a', 0), at('v2', 'a', 6)])
+  assert.ok(tight.get('v1')! < loose.get('v1')!, '가까울수록 더 늦춰야 한다')
+  for (const f of [...tight.values(), ...loose.values()]) assert.ok(f >= 0.55, `하한 위반 ${f}`)
+})
+
+test('붙어 출발한 차량도 굴리다 보면 고르게 퍼지고, 퍼진 뒤엔 아무도 안 늦춘다', () => {
+  // 같은 자리에서 출발한 세 대를 늦춤 배수대로 계속 굴린다
+  const v = [at('v1', 'a', 0), at('v2', 'a', 0), at('v3', 'a', 0)]
+  const advance = (steps: number) => {
+    for (let i = 0; i < steps; i += 1) {
+      const f = headwayHoldFactors(LINE, 'SUBWAY', v)
+      for (const item of v) item.segmentProgressMinutes += 0.5 * (f.get(item.id) ?? 1)
+    }
+  }
+  advance(400)
+  const spread = v.map(item => item.segmentProgressMinutes).sort((a, b) => a - b)
+  assert.ok(spread[2] - spread[0] > 5, `아직 뭉쳐 있다: ${JSON.stringify(spread)}`)
+
+  // 충분히 퍼진 뒤에는 붙잡는 차량이 없거나, 있어도 거의 정상 속도다
+  for (const f of headwayHoldFactors(LINE, 'SUBWAY', v).values()) {
+    assert.ok(f > 0.9, `수렴 후에도 과하게 늦춤: ${f}`)
+  }
 })

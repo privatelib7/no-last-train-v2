@@ -294,34 +294,85 @@ export function reconcileVehicleForInsertedStation(
   }
 }
 
-export type BunchableVehicle = {
+export type SpaceableVehicle = {
+  id: string
   currentStationId: string | null
   direction: number
   segmentProgressMinutes: number
-  headwayMinutes: number
+}
+
+/** 한 대라도 이만큼까지만 늦춘다 — 더 늦추면 화면에서 멈춰 선 것처럼 보인다 */
+const MIN_HEADWAY_HOLD = 0.55
+
+/** 왕복 한 바퀴에 걸리는 게임 분과, 각 역까지의 누적 시간 */
+function routeTiming(stations: MotionStation[], mode: TransitMode) {
+  const dwell = stationDwellMinutes(mode)
+  const cumulative = [0]
+  for (let i = 1; i < stations.length; i += 1) {
+    cumulative.push(cumulative[i - 1] + segmentTravelMinutes(stations[i - 1], stations[i], mode) + dwell)
+  }
+  const oneWay = cumulative[cumulative.length - 1]
+  return { cumulative, roundTrip: oneWay * 2 }
 }
 
 /**
- * 같은 노선에서 완전히 같은 위치·방향으로 겹쳐 달리는 차량을 배차 간격만큼 뒤로 물린다.
- *
- * 차량 투입(SET_VEHICLE_SERVICE)은 모든 차량에 같은 출발 상태를 주고 이동 계산은
- * 결정적이라, 한 노선에 여러 대를 넣으면 좌표까지 똑같이 붙어 달린다. 그러면 앞차가
- * 역의 대기 승객을 전부 태우고 뒤차는 한 명도 못 태워, 차량을 더 사도 수송량이 늘지 않는다.
- * 한 번 벌어지면 같은 속도로 달리므로 간격이 유지된다.
- *
- * 넘긴 배열을 그대로 고쳐 쓰고, 실제로 움직인 차량만 돌려준다(호출부가 저장 대상 표시에 쓴다).
+ * 차량이 노선 한 바퀴 중 어디쯤인지를 «분»으로 편다. 정방향은 그대로, 역방향은
+ * 반대편 반 바퀴에 얹어 0~roundTrip 사이 한 점이 되게 한다.
  */
-export function spreadBunchedVehicles<T extends BunchableVehicle>(vehicles: T[]): T[] {
-  const seenCount = new Map<string, number>()
-  const moved: T[] = []
-  for (const vehicle of vehicles) {
-    const key = `${vehicle.currentStationId}|${vehicle.direction}|${vehicle.segmentProgressMinutes}`
-    const already = seenCount.get(key) ?? 0
-    seenCount.set(key, already + 1)
-    if (already === 0) continue
-    // 음수 progress = 역에 정차한 채 남은 시간. 겹친 순번만큼 더 세워 뒤로 보낸다.
-    vehicle.segmentProgressMinutes -= Math.max(1, vehicle.headwayMinutes) * already
-    moved.push(vehicle)
+function routePhase(
+  vehicle: SpaceableVehicle,
+  stations: MotionStation[],
+  cumulative: number[],
+  roundTrip: number,
+): number | null {
+  const index = stations.findIndex(station => station.id === vehicle.currentStationId)
+  if (index < 0) return null
+  const forward = vehicle.direction >= 0
+  const raw = forward
+    ? cumulative[index] + vehicle.segmentProgressMinutes
+    : roundTrip - cumulative[index] + vehicle.segmentProgressMinutes
+  return ((raw % roundTrip) + roundTrip) % roundTrip
+}
+
+/**
+ * 앞차와의 간격이 «한 바퀴 ÷ 대수»보다 좁은 차량을 그만큼 천천히 가게 해, 여러 대를
+ * 한꺼번에 투입해도 저절로 노선 전체에 고르게 퍼지게 한다.
+ *
+ * 같은 시각에 투입된 차량은 출발 상태가 똑같고 이동 계산이 결정적이라 줄줄이 붙어
+ * 다닌다. 앞차가 승객을 다 태우고 뒤차는 빈 역만 지나므로 차량을 늘려도 수송량이
+ * 늘지 않는다. 실제 운행에서 쓰는 «간격 조정(headway holding)»과 같은 방식으로,
+ * 앞이 막힌 차량만 조금씩 늦춰 한 바퀴를 N등분한 배치로 수렴시킨다.
+ *
+ * 속도를 올리는 쪽은 쓰지 않는다 — 정해진 속도보다 빨리 달리면 어색하다.
+ * 차량 id → 이번 스텝에 적용할 속도 배수(0.55~1)를 돌려준다.
+ */
+export function headwayHoldFactors(
+  stations: MotionStation[],
+  mode: TransitMode,
+  vehicles: SpaceableVehicle[],
+): Map<string, number> {
+  const factors = new Map<string, number>()
+  if (stations.length < 2 || vehicles.length < 2) return factors
+
+  const { cumulative, roundTrip } = routeTiming(stations, mode)
+  if (roundTrip <= 0) return factors
+
+  const placed = vehicles
+    .map(vehicle => ({ vehicle, phase: routePhase(vehicle, stations, cumulative, roundTrip) }))
+    .filter((item): item is { vehicle: SpaceableVehicle; phase: number } => item.phase !== null)
+    .sort((a, b) => a.phase - b.phase || a.vehicle.id.localeCompare(b.vehicle.id))
+  if (placed.length < 2) return factors
+
+  const idealGap = roundTrip / placed.length
+  for (let i = 0; i < placed.length; i += 1) {
+    const ahead = placed[(i + 1) % placed.length]
+    // 원형이라 마지막 차량의 «앞»은 첫 차량이다
+    const gap = i + 1 === placed.length
+      ? roundTrip - placed[i].phase + ahead.phase
+      : ahead.phase - placed[i].phase
+    if (gap >= idealGap) continue
+    const closeness = Math.max(0, Math.min(1, gap / idealGap))
+    factors.set(placed[i].vehicle.id, MIN_HEADWAY_HOLD + (1 - MIN_HEADWAY_HOLD) * closeness)
   }
-  return moved
+  return factors
 }
