@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type WheelEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent, type WheelEvent } from 'react'
 import {
   ApiError,
   CONGESTION_SATURATED,
@@ -25,6 +25,7 @@ import InviteModal from './InviteModal'
 import CitySettingsModal from './CitySettingsModal'
 import { getCityMap, polyPath, type CityMapDef } from '../maps'
 import { depotTerminusOf } from '../vehicle-motion'
+import { nightFactor } from '../day-night'
 import LiveTransitLayer, { type HudSample, type MotionDrive } from './LiveTransitLayer'
 import styles from './GamePage.module.css'
 
@@ -98,6 +99,10 @@ const MAX_VEHICLES_PER_LINE = 8
 const INITIAL_MAP_VIEW: MapView = { x: 0, y: 0, width: 100, height: 100 }
 
 // 노선 끝 배지 — 종점에서 띄우는 거리 / 겹칠 때 한 칸 간격 / 최대 몇 칸까지 밀지 (지도 단위, mapScale 곱해 씀)
+// 밤 장막을 보이는 영역 밖으로 얼마나 더 키울지 (viewBox 배수). SVG가 뷰포트 밖을 잘라주므로
+// 넉넉해도 손해가 없다 — 아주 납작한 창에서도 좌우가 비지 않을 만큼.
+const NIGHT_VEIL_OVERSCAN = 2
+
 const BADGE_GAP = 2.4
 const BADGE_STEP = 4.1
 const BADGE_MAX_SHIFT = 6
@@ -1590,6 +1595,8 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   }
   const selectedStation = stationById.get(selectedStationId) ?? null
   const gameHour = (continuousTick / TICKS_PER_HOUR) % 24
+  // 지도 안 배경을 게임 시각에 맞춰 어둡게 한다 (0 한낮 ~ 1 한밤)
+  const night = nightFactor(gameHour)
   const isWeekend = Math.floor(continuousTick / TICKS_PER_DAY) % 7 >= 5
   const elapsedSeconds = continuousTick * (LIVE_TICK_MS / 1000)
   // 사이드바 차량 상태는 motion 스냅샷만 가볍게 읽는다(전체 리렌더 유발 없음).
@@ -2130,7 +2137,11 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
           </div>
         </header>
 
-        <div className={styles.mapCanvas} aria-label={`${mapDef.name} 도시 노선도`}>
+        <div
+          className={styles.mapCanvas}
+          aria-label={`${mapDef.name} 도시 노선도`}
+          style={{ '--night': night } as CSSProperties}
+        >
           <div className={styles.mapControls}>
             <div className={styles.stationBuilder}>
               <button
@@ -2211,6 +2222,30 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
             <g className={styles.mountains}>
               {mapDef.mountainPaths.map((path, index) => <path key={index} d={path} />)}
             </g>
+
+            {/* 지형 위·노선 아래에 깔아 배경만 저물게 한다 — 노선·역·열차는 밤에도 또렷하게 남는다.
+                SVG는 viewBox 밖 내용도 뷰포트 안이면 그리므로(preserveAspectRatio meet),
+                viewBox 크기로만 덮으면 확대 시 좌우가 안 저문다. 넉넉히 키워 전체를 덮는다 */}
+            <rect
+              x={mapView.x - mapView.width * NIGHT_VEIL_OVERSCAN}
+              y={mapView.y - mapView.height * NIGHT_VEIL_OVERSCAN}
+              width={mapView.width * (1 + NIGHT_VEIL_OVERSCAN * 2)}
+              height={mapView.height * (1 + NIGHT_VEIL_OVERSCAN * 2)}
+              className={styles.nightVeil}
+            />
+
+            {/* 장막이 지형을 고르게 덮으면 경계선·글자처럼 얇고 옅은 것부터 묻힌다.
+                밤에만 지형 윤곽을 장막 위에 한 번 더 그려 형태를 되살린다.
+                구역은 여기 넣지 않는다 — 회색 선을 덧그리면 주거/상업/공업 색이 죽는다.
+                대신 .zone_* 가 밤에 자기 색을 진하게 낸다 */}
+            <g className={styles.nightOutlines} aria-hidden="true">
+              <path d={mapDef.landPath} />
+              {mapDef.islandPaths.map((path, index) => (
+                <path key={`night-island-${index}`} d={path} />
+              ))}
+            </g>
+
+            {/* 구 이름도 장막 위에 둬야 밤에 읽힌다 */}
             <g className={styles.districtLabels}>
               {mapDef.districts.map(district => (
                 <text key={district.label} x={district.x} y={district.y}>{district.label}</text>
