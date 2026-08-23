@@ -1475,6 +1475,66 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     }
   }, [draggedSegmentKey])
 
+  const mapScale = mapView.width / 100
+
+  // ⚠ 훅이므로 아래 조기 반환(!state / !motionSettled)보다 «위»에 있어야 한다.
+  // 지형은 mapDef·mapScale이 바뀔 때만 다시 만든다. GamePage는 500ms마다, 그리고 팬 중에는
+  // pointermove마다 통째로 리렌더되는데, 팬은 <svg>의 viewBox 속성만 건드리므로 이 안은
+  // 그대로 재사용된다. getCityMap이 «같은 객체»를 돌려주는 것이 이 memo의 전제다.
+  const terrain = useMemo(() => (
+    <>
+      <defs>
+        <pattern id="map-grid" width="5" height="5" patternUnits="userSpaceOnUse">
+          <path d="M 5 0 L 0 0 0 5" fill="none" stroke="rgba(26,22,19,.035)" strokeWidth=".18" />
+        </pattern>
+        {/* 섬·내수면이 같은 경로의 서브패스라 evenodd가 필요하다 */}
+        <clipPath id="city-land-clip" clipRule="evenodd">
+          <path d={mapDef.coastline} clipRule="evenodd" />
+        </clipPath>
+      </defs>
+      <rect width="100" height="100" className={styles.sea} />
+      <path className={styles.land} d={mapDef.coastline} fillRule="evenodd" />
+      <g clipPath="url(#city-land-clip)">
+        {/* 고도대는 «구역 아래». 위에 얹으면 넓은 100m 밴드가 반투명 구역 여섯 색을 뭉갠다 */}
+        <g className={styles.relief} aria-hidden="true">
+          {mapDef.reliefBands.map(band => <path key={band.minM} d={band.d} fillRule="evenodd" />)}
+        </g>
+        <g aria-label="도시 구역">
+          {mapDef.districts.map(district => (
+            <path
+              key={district.name}
+              className={`${styles.district} ${styles[`district_${district.kind}`]}`}
+              d={district.d}
+            />
+          ))}
+        </g>
+        {/* 등고선은 «구역 위». 머리카락 굵기라 반투명 채움 아래 깔면 뭉개진다.
+            굵기는 화면 기준 — 이 지도의 잉크(노선·역 이름·배지)가 전부 그렇다 */}
+        <g className={styles.contours} style={{ strokeWidth: 0.09 * mapScale }} aria-hidden="true">
+          {mapDef.contours.map(contour => <path key={contour.elevM} d={contour.d} />)}
+        </g>
+      </g>
+      <path className={styles.mapGrid} d="M0 0H100V100H0Z" />
+      <g className={styles.water} aria-hidden="true">
+        {mapDef.water.map((d, index) => <path key={index} d={d} fillRule="evenodd" />)}
+      </g>
+    </>
+  ), [mapDef, mapScale])
+
+  // 장막 «위»에 얹는 것들. 밤에 묻히면 안 되는 윤곽과 구 이름이다.
+  const terrainInk = useMemo(() => (
+    <>
+      <g className={styles.nightOutlines} aria-hidden="true">
+        <path d={mapDef.coastline} />
+      </g>
+      <g className={styles.districtLabels}>
+        {mapDef.guLabels.map(gu => (
+          <text key={gu.name} transform={`translate(${gu.at[0]} ${gu.at[1]}) scale(${mapScale})`}>{gu.name}</text>
+        ))}
+      </g>
+    </>
+  ), [mapDef, mapScale])
+
   if (!state) {
     if (errorStatus === 401) {
       return (
@@ -1569,64 +1629,6 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   // HUD 시계/대기인원은 LiveTransitLayer가 500ms마다 샘플링해 올려준다.
   const continuousTick = hudSample.continuousTick > 0 ? hudSample.continuousTick : currentTick
   const currentGameDay = Math.floor(continuousTick / TICKS_PER_DAY) + 1
-  const mapScale = mapView.width / 100
-
-  // 지형은 mapDef·mapScale이 바뀔 때만 다시 만든다. GamePage는 500ms마다, 그리고 팬 중에는
-  // pointermove마다 통째로 리렌더되는데, 팬은 <svg>의 viewBox 속성만 건드리므로 이 안은
-  // 그대로 재사용된다. getCityMap이 «같은 객체»를 돌려주는 것이 이 memo의 전제다.
-  const terrain = useMemo(() => (
-    <>
-      <defs>
-        <pattern id="map-grid" width="5" height="5" patternUnits="userSpaceOnUse">
-          <path d="M 5 0 L 0 0 0 5" fill="none" stroke="rgba(26,22,19,.035)" strokeWidth=".18" />
-        </pattern>
-        {/* 섬·내수면이 같은 경로의 서브패스라 evenodd가 필요하다 */}
-        <clipPath id="city-land-clip" clipRule="evenodd">
-          <path d={mapDef.coastline} clipRule="evenodd" />
-        </clipPath>
-      </defs>
-      <rect width="100" height="100" className={styles.sea} />
-      <path className={styles.land} d={mapDef.coastline} fillRule="evenodd" />
-      <g clipPath="url(#city-land-clip)">
-        {/* 고도대는 «구역 아래». 위에 얹으면 넓은 100m 밴드가 반투명 구역 여섯 색을 뭉갠다 */}
-        <g className={styles.relief} aria-hidden="true">
-          {mapDef.reliefBands.map(band => <path key={band.minM} d={band.d} fillRule="evenodd" />)}
-        </g>
-        <g aria-label="도시 구역">
-          {mapDef.districts.map(district => (
-            <path
-              key={district.name}
-              className={`${styles.district} ${styles[`district_${district.kind}`]}`}
-              d={district.d}
-            />
-          ))}
-        </g>
-        {/* 등고선은 «구역 위». 머리카락 굵기라 반투명 채움 아래 깔면 뭉개진다.
-            굵기는 화면 기준 — 이 지도의 잉크(노선·역 이름·배지)가 전부 그렇다 */}
-        <g className={styles.contours} style={{ strokeWidth: 0.09 * mapScale }} aria-hidden="true">
-          {mapDef.contours.map(contour => <path key={contour.elevM} d={contour.d} />)}
-        </g>
-      </g>
-      <path className={styles.mapGrid} d="M0 0H100V100H0Z" />
-      <g className={styles.water} aria-hidden="true">
-        {mapDef.water.map((d, index) => <path key={index} d={d} fillRule="evenodd" />)}
-      </g>
-    </>
-  ), [mapDef, mapScale])
-
-  // 장막 «위»에 얹는 것들. 밤에 묻히면 안 되는 윤곽과 구 이름이다.
-  const terrainInk = useMemo(() => (
-    <>
-      <g className={styles.nightOutlines} aria-hidden="true">
-        <path d={mapDef.coastline} />
-      </g>
-      <g className={styles.districtLabels}>
-        {mapDef.guLabels.map(gu => (
-          <text key={gu.name} transform={`translate(${gu.at[0]} ${gu.at[1]}) scale(${mapScale})`}>{gu.name}</text>
-        ))}
-      </g>
-    </>
-  ), [mapDef, mapScale])
   // 노선 끝 배지 위치. 종점이 같은 역인 노선끼리 포개지지 않게 바깥쪽으로 한 칸씩 밀어낸다.
   const lineEndBadges: Array<{
     id: string; line: GameLine; label: string; station: Station
