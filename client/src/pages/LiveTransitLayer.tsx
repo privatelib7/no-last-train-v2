@@ -390,14 +390,14 @@ function LiveTransitLayer({
             >
               {line.mode === 'BUS' ? (
                 <>
-                  <rect x="-4.2" y="-2.1" width="9.15" height="4.2" rx="1.6" fill={resolveLineColor(line.color)} className={styles.trainBody} />
-                  <rect x="-2.9" y="-1.35" width="2.7" height="1.35" rx=".3" className={styles.trainWindow} />
-                  {/* 문을 살짝 뒤로 물려서 번호 앞뒤로 여백이 보이게 한다 */}
-                  <rect x=".25" y="-1.15" width="1.15" height="2.5" rx=".22" className={styles.busDoor} />
-                  <circle cx="-1.9" cy="2.05" r=".56" className={styles.trainWheel} />
+                  {/* 차체를 원점(회전축) 중심으로 좌우 대칭 배치 — 예전엔 오른쪽으로 쏠려 있어 선택 시 강조 테두리와 차체가 어긋나 보였다 */}
+                  <rect x="-4.5" y="-2.1" width="9" height="4.2" rx="1.6" fill={resolveLineColor(line.color)} className={styles.trainBody} />
+                  <rect x="-3.5" y="-1.2" width="3.3" height="1.25" rx=".3" className={styles.trainWindow} />
+                  <rect x=".15" y="-1.35" width="1.1" height="2.7" rx=".24" className={styles.busDoor} />
+                  <circle cx="-2.15" cy="2.05" r=".56" className={styles.trainWheel} />
                   <circle cx="2.85" cy="2.05" r=".56" className={styles.trainWheel} />
-                  {/* 뒤 테두리→창문 여백(1.3) = 글자 오른쪽→앞 테두리 여백. 글자 반폭 ≈ 0.74 */}
-                  <text x={trainFlipped ? -2.91 : 2.91} y=".9" textAnchor="middle" className={styles.trainNumber} transform={trainFlipped ? 'scale(-1,1)' : undefined}>{lineNo}</text>
+                  {/* 기준선(y=.55)을 지하철 번호와 통일해 두 차종이 같은 높이로 보이게 한다 */}
+                  <text x={trainFlipped ? -2.85 : 2.85} y=".55" textAnchor="middle" className={styles.trainNumber} transform={trainFlipped ? 'scale(-1,1)' : undefined}>{lineNo}</text>
                 </>
               ) : (
                 <>
