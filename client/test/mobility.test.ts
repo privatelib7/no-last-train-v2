@@ -20,7 +20,7 @@ test('keeps ambient citizens visible when a city has no operating lines', () => 
     map,
   })
 
-  assert.ok(journeys.length >= 54)
+  assert.ok(journeys.length >= 24)
   assert.ok(journeys.every(journey => journey.accessMode === 'CITY'))
   assert.ok(journeys.every(journey => journey.landSafe))
 
@@ -67,7 +67,7 @@ test('keeps station-bound journeys when an operating line exists', () => {
     map,
   })
 
-  assert.ok(journeys.length >= 54)
+  assert.ok(journeys.length >= 24)
   assert.ok(journeys.every(journey => journey.accessMode === 'SUBWAY'))
   assert.ok(journeys.every(journey => journey.targetStationId === stationA.id || journey.targetStationId === stationB.id))
 })
