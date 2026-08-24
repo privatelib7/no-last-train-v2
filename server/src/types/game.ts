@@ -105,6 +105,7 @@ export interface RouteSegment {
 export const SIM = {
   TICKS_PER_GAME_HOUR: 6,       // 틱당 게임 10분, 6틱 = 게임 1시간
   GAME_HOURS_PER_DAY: 24,
+  GAME_START_HOUR: 5,           // 새 도시는 05시에 시작하고, 하루도 05시에 바뀐다
   GAME_MINUTES_PER_TICK: 10,    // 경제 집계 틱과 별개로 차량은 이 시간을 연속 이동한다
   LIVE_TICK_MS: 3000,            // 실시간 웹 운행: 3초마다 1틱
   MAX_OFFLINE_HOURS: 12,         // 오프라인 보상 최대 12시간
@@ -118,6 +119,12 @@ export const SIM = {
 // ─── 게임 내 달력 ────────────────────────────────────────────────────────
 
 const TICKS_PER_DAY = SIM.TICKS_PER_GAME_HOUR * SIM.GAME_HOURS_PER_DAY
+
+/** 틱 → 게임 내 시각(0 이상 24 미만). 0틱이 05시라 «운행일»은 05시에 시작해 05시에 끝난다. */
+export function gameHourOfTick(tick: number): number {
+  const hour = tick / SIM.TICKS_PER_GAME_HOUR + SIM.GAME_START_HOUR
+  return ((hour % 24) + 24) % 24
+}
 
 /** 게임 내 요일 — 0=월 … 6=일. 7일 주기로 6·7일차가 주말이다. */
 export function dayIndexOfTick(tick: number): number {

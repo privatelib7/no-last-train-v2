@@ -187,6 +187,13 @@ export type SimResult = {
 // 서버 SIM 상수(server/src/types/game.ts)와 반드시 일치해야 한다
 export const TICKS_PER_HOUR = 6
 export const TICKS_PER_DAY = TICKS_PER_HOUR * 24
+export const GAME_START_HOUR = 5
+
+/** 틱 → 게임 내 시각(0 이상 24 미만). 서버 gameHourOfTick()과 같은 식이다. */
+export function gameHourOfTick(tick: number): number {
+  const hour = tick / TICKS_PER_HOUR + GAME_START_HOUR
+  return ((hour % 24) + 24) % 24
+}
 
 // 혼잡도(waiting/capacity) 표시 기준 — 연웅: 행복도 하락 판정도 서버에서 같은 기준 사용 권장
 export const CONGESTION_WARN = 0.7
