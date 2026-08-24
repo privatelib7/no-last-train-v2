@@ -1168,6 +1168,29 @@
   background: rgba(79, 142, 92, 0.07);
 }
 
+.colorPickerButton {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--gp-border-strong);
+  border-radius: 6px;
+  background: var(--gp-surface);
+  color: var(--gp-text-button);
+  font-size: 14.5px;
+  font-weight: 800;
+}
+
+.colorPickerButton i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+}
+
 .toolToggle {
   display: grid;
   grid-template-columns: 1fr 1fr;

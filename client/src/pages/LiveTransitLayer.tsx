@@ -13,6 +13,7 @@ import {
   modeCruiseSpeed,
   type RenderedVehicleMotion,
 } from '../vehicle-motion'
+import { resolveLineColor } from '../lib/line-color'
 import styles from './GamePage.module.css'
 
 const LIVE_TICK_MS = 3000
@@ -25,14 +26,6 @@ const VEHICLE_SCALE = 0.62
 const EARNINGS_FLASH_DURATION_MS = 1600
 const EARNINGS_FLASH_RISE_UNITS = 3.5
 const HUD_SAMPLE_MS = 500
-
-const LINE_COLORS: Record<string, string> = {
-  RED: '#E9783C',
-  BLUE: '#3F8EDB',
-  GREEN: '#55A96A',
-  YELLOW: '#E1B735',
-  PURPLE: '#8E6CC1',
-}
 
 const CITIZEN_MODE_CLASSES: Record<CitizenTravelMode, string> = {
   WALK: styles.personWalking,
@@ -398,22 +391,24 @@ function LiveTransitLayer({
             >
               {line.mode === 'BUS' ? (
                 <>
-                  <rect x="-3" y="-2.1" width="6" height="4.2" rx="1.6" fill={LINE_COLORS[line.color]} className={styles.trainBody} />
-                  <rect x="-2.2" y="-1.35" width="2.7" height="1.35" rx=".3" className={styles.trainWindow} />
-                  <rect x="1" y="-1.15" width="1.15" height="2.5" rx=".22" className={styles.busDoor} />
-                  <circle cx="-1.6" cy="2.05" r=".56" className={styles.trainWheel} />
-                  <circle cx="1.6" cy="2.05" r=".56" className={styles.trainWheel} />
-                  <text x="-.6" y=".9" textAnchor="middle" className={styles.trainNumber} transform={trainFlipped ? 'scale(-1,1)' : undefined}>{lineNo}</text>
+                  {/* 차체를 원점(회전축) 중심으로 좌우 대칭 배치 — 예전엔 오른쪽으로 쏠려 있어 선택 시 강조 테두리와 차체가 어긋나 보였다 */}
+                  <rect x="-4.5" y="-2.1" width="9" height="4.2" rx="1.6" fill={resolveLineColor(line.color)} className={styles.trainBody} />
+                  <rect x="-3.5" y="-1.2" width="3.3" height="1.25" rx=".3" className={styles.trainWindow} />
+                  <rect x=".15" y="-1.35" width="1.1" height="2.7" rx=".24" className={styles.busDoor} />
+                  <circle cx="-2.15" cy="2.05" r=".56" className={styles.trainWheel} />
+                  <circle cx="2.85" cy="2.05" r=".56" className={styles.trainWheel} />
+                  {/* 기준선(y=.55)을 지하철 번호와 통일해 두 차종이 같은 높이로 보이게 한다 */}
+                  <text x={trainFlipped ? -2.85 : 2.85} y=".55" textAnchor="middle" className={styles.trainNumber} transform={trainFlipped ? 'scale(-1,1)' : undefined}>{lineNo}</text>
                 </>
               ) : (
                 <>
                   <path d="M-1.6 -2.9H1.6M-1.1 -2L0 -2.85L1.1 -2" className={styles.pantograph} />
-                  <rect x="-3.7" y="-2" width="7.4" height="4" rx="1.2" fill={LINE_COLORS[line.color]} className={styles.trainBody} />
+                  <rect x="-3.7" y="-2" width="7.4" height="4" rx="1.2" fill={resolveLineColor(line.color)} className={styles.trainBody} />
                   <rect x="-2.8" y="-1.2" width="1.55" height="1.25" rx=".28" className={styles.trainWindow} />
                   <rect x="-.65" y="-1.2" width="1.55" height="1.25" rx=".28" className={styles.trainWindow} />
                   <circle cx="-2.15" cy="1.85" r=".56" className={styles.trainWheel} />
                   <circle cx="2.15" cy="1.85" r=".56" className={styles.trainWheel} />
-                  <text x="2.2" y=".55" textAnchor="middle" className={styles.trainNumber} transform={trainFlipped ? 'scale(-1,1)' : undefined}>{lineNo}</text>
+                  <text x={trainFlipped ? -2.2 : 2.2} y=".55" textAnchor="middle" className={styles.trainNumber} transform={trainFlipped ? 'scale(-1,1)' : undefined}>{lineNo}</text>
                 </>
               )}
             </g>

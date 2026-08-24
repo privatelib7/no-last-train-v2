@@ -9,6 +9,7 @@ function formatCash(value: number) {
 import { depotPulloutMinutes, reconcileVehicleForInsertedStation, stationDwellMinutes } from '@/lib/vehicle-motion'
 import { isVehicleInService, vehicleServiceUpdate } from '@/lib/vehicle-service'
 import { resetCityForNewGame } from '@/lib/city-reset'
+import { nextAvailableLineColor, normalizeHexColor } from '@/lib/line-color'
 import type { Prisma } from '@prisma/client'
 import { z } from 'zod'
 
@@ -73,6 +74,11 @@ const ActionSchema = z.discriminatedUnion('type', [
     status: z.enum(['OPERATING', 'SUSPENDED']),
   }),
   z.object({
+    type: z.literal('SET_LINE_COLOR'),
+    lineId: z.string(),
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/, '색상 코드 형식이 올바르지 않습니다. (예: #E9783C)'),
+  }),
+  z.object({
     type: z.literal('BUY_VEHICLE'),
     lineId: z.string(),
     count: z.number().int().min(1).max(3).default(1),
@@ -104,8 +110,6 @@ const ActionSchema = z.discriminatedUnion('type', [
 
 class ConstructionFundsError extends Error {}
 
-const LINE_COLORS = ['RED', 'BLUE', 'GREEN', 'YELLOW', 'PURPLE'] as const
-
 // 한 노선이 보유할 수 있는 차량 상한 — 차고지 표시와 운영비가 감당 가능한 범위
 const MAX_VEHICLES_PER_LINE = 8
 
@@ -132,9 +136,7 @@ function nextLineIdentity(
     name = letter ? `${letter}노선` : `버스 ${lines.length + 1}노선`
   }
 
-  const color = LINE_COLORS
-    .map(candidate => ({ candidate, count: lines.filter(item => item.color === candidate).length }))
-    .sort((a, b) => a.count - b.count)[0].candidate
+  const color = nextAvailableLineColor(lines.map(item => item.color))
   return { name, color }
 }
 
@@ -592,6 +594,18 @@ export async function POST(
       : `${line.name} 운행을 폐쇄했습니다.`
     await db.activityLog.create({ data: { cityId: id, playerId: auth.player.id, message } })
     return NextResponse.json({ message })
+  }
+
+  if (action.type === 'SET_LINE_COLOR') {
+    const color = normalizeHexColor(action.color)
+    const duplicate = await db.line.findFirst({
+      where: { cityId: id, id: { not: line.id }, color },
+    })
+    if (duplicate) return NextResponse.json({ error: '이미 존재하는 색상입니다.' }, { status: 409 })
+    const updated = await db.line.update({ where: { id: line.id }, data: { color } })
+    const message = `${line.name} 색상을 변경했습니다.`
+    await db.activityLog.create({ data: { cityId: id, playerId: auth.player.id, message } })
+    return NextResponse.json({ message, line: updated })
   }
 
   if (action.type === 'BUY_VEHICLE') {
