@@ -59,7 +59,12 @@ if [[ $SKIP_INSTALL -eq 0 ]]; then
 fi
 
 log "Prisma 클라이언트 생성 · 스키마 반영"
-( cd server && npx prisma generate && npx prisma db push )
+# pre-push-fixups: db push가 «데이터가 있어서» 거부하는 타입 변경을 데이터를 지키며 미리 옮긴다.
+# 이게 없으면 db push가 --force-reset(운영 DB 전체 삭제)을 권하며 배포가 그 자리에서 멈춘다.
+( cd server \
+    && npx prisma generate \
+    && node --env-file-if-exists=.env scripts/pre-push-fixups.mjs \
+    && npx prisma db push )
 
 if [[ $DO_SEED -eq 1 ]]; then
   log "초기 데이터 시드"
