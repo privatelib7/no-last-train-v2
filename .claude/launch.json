@@ -6,6 +6,22 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev:client"],
       "port": 5173
+    },
+    {
+      "//": "3001은 바꿀 수 없다(autoPort: false). client/vite.config.ts가 /api 프록시 기본값을 http://localhost:3001로 두고 client/.env의 API_PROXY_TARGET도 그 값으로 고정돼 있어, 다른 포트로 뜨면 브라우저의 /api 요청이 전부 502가 된다. 포트는 CLI 플래그가 아니라 server/.env의 PORT에서 next-with-env.mjs를 거쳐 들어간다.",
+      "name": "server",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:server"],
+      "port": 3001,
+      "autoPort": false
+    },
+    {
+      "//": "3012도 마찬가지다. 브라우저는 같은 오리진의 /ws로 붙고 Vite가 REALTIME_PROXY_TARGET(기본 http://localhost:3012)으로 넘긴다. 이게 없으면 화면에서 차량이 멈춰 있다.",
+      "name": "realtime",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "realtime", "-w", "no-last-train-server"],
+      "port": 3012,
+      "autoPort": false
     }
   ]
 }

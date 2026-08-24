@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "npm run db:prepare && node scripts/next-with-env.mjs dev",
+    "realtime": "tsx --env-file-if-exists=.env scripts/realtime-server.ts",
     "build": "next build",
     "build:next": "next build",
     "test": "tsx --test src/lib/*.test.ts",
