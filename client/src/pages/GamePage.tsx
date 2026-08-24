@@ -24,7 +24,7 @@ import { playGoalUnlockSfx } from '../lib/sfx'
 import InviteModal from './InviteModal'
 import CitySettingsModal from './CitySettingsModal'
 import { getCityMap, polyPath, type CityMapDef } from '../maps'
-import { depotTerminusOf } from '../vehicle-motion'
+import { layoutLineEndBadges, type LineEndBadge } from '../line-badges'
 import LiveTransitLayer, { type HudSample, type MotionDrive } from './LiveTransitLayer'
 import styles from './GamePage.module.css'
 
@@ -96,11 +96,6 @@ const PRESENCE_COLORS = ['#ff6f91', '#4fc9a8', '#5b8cf2', '#ffb648', '#a77dfb', 
 const MAX_VEHICLES_PER_LINE = 8
 // 전철·버스 글리프 축소 배율 — 역/선로에 비해 차량이 너무 커 보이지 않게 한다
 const INITIAL_MAP_VIEW: MapView = { x: 0, y: 0, width: 100, height: 100 }
-
-// 노선 끝 배지 — 종점에서 띄우는 거리 / 겹칠 때 한 칸 간격 / 최대 몇 칸까지 밀지 (지도 단위, mapScale 곱해 씀)
-const BADGE_GAP = 2.4
-const BADGE_STEP = 4.1
-const BADGE_MAX_SHIFT = 6
 
 const LINE_COLORS: Record<string, string> = {
   RED: '#E9783C',
@@ -778,18 +773,6 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       }
     }
     return new Set([...modes].filter(([, set]) => set.size === 1 && set.has('BUS')).map(([stationId]) => stationId))
-  }, [sortedLines])
-  // 차고지 스퍼가 붙는 쪽 종점 (depot 좌표에 더 가까운 끝)
-  const depotTerminusByStationId = useMemo(() => {
-    const byStation = new Map<string, GameLine[]>()
-    for (const line of sortedLines) {
-      const terminus = depotTerminusOf(line)
-      if (!terminus) continue
-      const list = byStation.get(terminus.id) ?? []
-      list.push(line)
-      byStation.set(terminus.id, list)
-    }
-    return byStation
   }, [sortedLines])
   const mapDef = getCityMap(state?.city.mapKey)
   const congestionByStation = useMemo(
@@ -1559,35 +1542,8 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const continuousTick = hudSample.continuousTick > 0 ? hudSample.continuousTick : currentTick
   const currentGameDay = Math.floor(continuousTick / TICKS_PER_DAY) + 1
   const mapScale = mapView.width / 100
-  // 노선 끝 배지 위치. 종점이 같은 역인 노선끼리 포개지지 않게 바깥쪽으로 한 칸씩 밀어낸다.
-  const lineEndBadges: Array<{
-    id: string; line: GameLine; label: string; station: Station
-    isHead: boolean; x: number; y: number
-  }> = []
-  for (const line of sortedLines) {
-    if (line.lineStations.length < 2) continue
-    const stops = orderedStations(line)
-    const label = line.name.match(/\d+/)?.[0] ?? line.name.slice(0, 1)
-    for (const [isHead, at, prev] of [
-      [true, stops[0], stops[1]] as const,
-      [false, stops[stops.length - 1], stops[stops.length - 2]] as const,
-    ]) {
-      // 직전 역 → 종점 방향 바깥으로 내보내 역 표시를 가리지 않게 한다
-      const dx = at.posX - prev.posX
-      const dy = at.posY - prev.posY
-      const len = Math.hypot(dx, dy) || 1
-      let x = 0
-      let y = 0
-      for (let step = 0; step <= BADGE_MAX_SHIFT; step += 1) {
-        const distance = (BADGE_GAP + step * BADGE_STEP) * mapScale
-        x = at.posX + (dx / len) * distance
-        y = at.posY + (dy / len) * distance
-        const clashes = lineEndBadges.some(other => Math.hypot(other.x - x, other.y - y) < BADGE_STEP * mapScale)
-        if (!clashes) break
-      }
-      lineEndBadges.push({ id: `${line.id}-${isHead ? 'head' : 'tail'}`, line, label, station: at, isHead, x, y })
-    }
-  }
+  // 노선 끝 호선 번호 배지. 겹칠 때 종점 둘레로 돌려 피하므로 노선에서 떨어지지 않는다.
+  const lineEndBadges: LineEndBadge[] = layoutLineEndBadges(sortedLines, state.city.stations, mapScale)
   const selectedStation = stationById.get(selectedStationId) ?? null
   const gameHour = (continuousTick / TICKS_PER_HOUR) % 24
   const isWeekend = Math.floor(continuousTick / TICKS_PER_DAY) % 7 >= 5
@@ -2302,9 +2258,6 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
               const point = stationPoint(station)
               const isInterchange = interchangeStationIds.has(station.id)
               const isBusStop = busOnlyStationIds.has(station.id)
-              const depotLines = depotTerminusByStationId.get(station.id) ?? []
-              const isDepotTerminus = depotLines.length > 0
-              const depotLabel = depotLines.map(line => `${lineDisplayName(line.name)} 차고지`).join(' · ')
               const isCurrentVehicleStation = selectedVehicle?.currentStationId === station.id
               const isDropTarget = dragTarget?.kind === 'STATION' && dragTarget.id === station.id
               const highlighted = isCurrentVehicleStation || isDropTarget || station.id === selectedStationId
@@ -2313,16 +2266,16 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                 <g
                   key={station.id}
                   transform={`translate(${point.x} ${point.y}) scale(${mapScale})`}
-                  className={`${styles.stationGroup}${isDepotTerminus ? ` ${styles.depotTerminusStation}` : ''}`}
+                  className={styles.stationGroup}
                   onClick={event => handleStationClick(event, station.id)}
                   onPointerDown={event => beginStationLinkDrag(event, station.id)}
                   role="button"
                   tabIndex={0}
                   data-station-id={station.id}
                   data-map-interactive="true"
-                  aria-label={`${station.name} ${isBusStop ? '버스 정류장' : isInterchange ? '환승역' : '일반역'}${isDepotTerminus ? ` · ${depotLabel}` : ''} 선택`}
+                  aria-label={`${station.name} ${isBusStop ? '버스 정류장' : isInterchange ? '환승역' : '일반역'} 선택`}
                 >
-                  <title>{station.name} · {isBusStop ? '버스 정류장' : isInterchange ? '환승역' : '일반역'}{isDepotTerminus ? ` · ${depotLabel}` : ''}</title>
+                  <title>{station.name} · {isBusStop ? '버스 정류장' : isInterchange ? '환승역' : '일반역'}</title>
                   {highlighted && <circle r="1.55" className={styles.stationSelection} />}
                   {congestion >= CONGESTION_SATURATED ? (
                     <circle r="1.45" className={styles.saturatedRing} />
@@ -2345,11 +2298,6 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                       <circle r="0.95" className={styles.stationHalo} />
                       <circle r="0.68" className={styles.stationNode} />
                     </>
-                  )}
-                  {isDepotTerminus && (
-                    <text y="2.7" textAnchor="middle" className={styles.depotTerminusLabel}>
-                      {depotLabel}
-                    </text>
                   )}
                 </g>
               )
