@@ -2319,7 +2319,9 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                         // 노선보다 확실히 굵어야 후광으로 읽히지만, 너무 굵으면
                         // 노선 고유색을 삼킨다(특히 빨강 계열 1호선).
                         strokeWidth: (1.7 + t * 1.2) * mapScale,
-                        opacity: 0.28 + t * 0.4,
+                        // 꼭대기 0.60 — 포화 구간의 congestedPulse 최고점과 같아서
+                        // 주의에서 포화로 넘어갈 때 진하기가 튀지 않는다
+                        opacity: 0.26 + t * 0.34,
                       }}
                     >
                       <title>

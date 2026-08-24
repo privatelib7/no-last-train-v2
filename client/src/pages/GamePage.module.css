@@ -1076,8 +1076,17 @@
 }
 
 .congestedSegmentSaturated {
-  /* 포화 역 링과 같은 박동 — 「여기부터 손봐라」가 한눈에 들어온다 */
-  animation: saturatedPulse 1s ease-in-out infinite;
+  /* 박동은 하되 역 링의 saturatedPulse(0.95까지 올라간다)를 쓰면 안 된다.
+     그건 굵기 0.55짜리 «얇은 링»에 맞춘 값이라, 노선을 감싸는 넓은 띠에 그대로 쓰면
+     빨강이 거의 불투명해져 지도를 잡아먹는다. 게다가 애니메이션은 인라인 opacity를
+     덮어써서 혼잡도에 따라 준 진하기가 통째로 무시된다.
+     최고점을 인라인 곡선의 꼭대기(0.60)에 맞춰 이어지게 한다. */
+  animation: congestedPulse 1s ease-in-out infinite;
+}
+
+@keyframes congestedPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 0.32; }
 }
 
 .congestedMark {
