@@ -1069,6 +1069,25 @@
   animation: saturatedPulse 1s ease-in-out infinite;
 }
 
+.congestedSegment {
+  /* 굵기·진하기·색은 GamePage.tsx가 혼잡도에 따라 인라인으로 준다 */
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+.congestedSegmentSaturated {
+  /* 포화 역 링과 같은 박동 — 「여기부터 손봐라」가 한눈에 들어온다 */
+  animation: saturatedPulse 1s ease-in-out infinite;
+}
+
+.congestedMark {
+  display: inline-block;
+  width: 14px;
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #e8a13c, #d64541);
+}
+
 @keyframes saturatedPulse {
   0%, 100% { opacity: 0.95; }
   50% { opacity: 0.3; }

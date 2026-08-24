@@ -24,6 +24,7 @@ import { playGoalUnlockSfx } from '../lib/sfx'
 import InviteModal from './InviteModal'
 import CitySettingsModal from './CitySettingsModal'
 import { getCityMap, type CityMapDef, type DistrictKind } from '../maps'
+import { congestedSegments, congestionHeat } from '../congestion'
 import { depotTerminusOf } from '../vehicle-motion'
 import { nightFactor } from '../day-night'
 import LiveTransitLayer, { type HudSample, type MotionDrive } from './LiveTransitLayer'
@@ -2302,6 +2303,32 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                     style={{ strokeWidth: 1.85 * mapScale }}
                   />
                 )}
+                {/* 혼잡 구간 — 노선 «아래»에 깔아 후광처럼 번지게 한다. 위에 덮으면 노선
+                    고유색이 가려져 어느 노선인지 알 수 없게 된다. 붐빌수록 굵고 진해지고,
+                    색은 주의(주황)에서 포화(빨강)로 넘어간다. 역의 혼잡 링과 같은 두 색이다 */}
+                {congestedSegments(orderedStations(line), congestionByStation).map(segment => {
+                  const { t, color } = congestionHeat(segment.congestion)
+                  return (
+                    <line
+                      key={`heat-${segment.key}`}
+                      className={`${styles.congestedSegment} ${segment.congestion >= CONGESTION_SATURATED ? styles.congestedSegmentSaturated : ''}`}
+                      x1={segment.from.posX} y1={segment.from.posY}
+                      x2={segment.to.posX} y2={segment.to.posY}
+                      style={{
+                        stroke: color,
+                        // 노선보다 확실히 굵어야 후광으로 읽히지만, 너무 굵으면
+                        // 노선 고유색을 삼킨다(특히 빨강 계열 1호선).
+                        strokeWidth: (1.7 + t * 1.2) * mapScale,
+                        opacity: 0.28 + t * 0.4,
+                      }}
+                    >
+                      <title>
+                        {segment.from.name}–{segment.to.name} · 혼잡 {Math.round(segment.congestion * 100)}%
+                        {segment.congestion >= CONGESTION_SATURATED ? ' (포화)' : ''}
+                      </title>
+                    </line>
+                  )
+                })}
                 <polyline
                   points={linePoints(line)}
                   className={`${styles.linePath} ${line.mode === 'BUS' ? styles.busPath : ''} ${line.id === selectedLineId ? styles.selectedLinePath : ''}`}
@@ -2496,6 +2523,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                   <span><i className={styles.interchangeStationMark} />환승</span>
                   <span><i className={styles.busStopMark} />버스 정류장</span>
                   <span><i className={styles.saturatedMark} />포화</span>
+                  <span><i className={styles.congestedMark} />혼잡 구간</span>
                 </div>
                 <div className={styles.legendRow} aria-label="구역 종류">
                   <b>구역</b>
