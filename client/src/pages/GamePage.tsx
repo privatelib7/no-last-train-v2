@@ -1505,7 +1505,12 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
               key={district.name}
               className={`${styles.district} ${styles[`district_${district.kind}`]}`}
               d={district.d}
-            />
+            >
+              {/* 이름은 마우스를 올렸을 때만 뜬다. 구역이 서른 개가 넘어 지도에 다 적으면
+                  글자끼리 겹치고, 그렇다고 색만 두면 범례를 매번 찾아봐야 한다.
+                  이 저장소가 이미 쓰는 방식(제목 바꾸기·설정 버튼의 title)과 같다. */}
+              <title>{district.name}</title>
+            </path>
           ))}
         </g>
         {/* 등고선은 «구역 위». 머리카락 굵기라 반투명 채움 아래 깔면 뭉개진다.

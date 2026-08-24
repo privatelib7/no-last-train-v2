@@ -2018,7 +2018,10 @@
      의도한 것이다(경계가 또렷해진다). 그래서 예전 zone(0.2)의 절반만 쓴다 */
   stroke-width: 0.12;
   stroke-opacity: calc(0.3 + var(--night, 0) * 0.5);
-  pointer-events: none;
+  /* 다른 지형과 달리 여기만 마우스를 받는다 — <title>로 구역 이름을 띄우기 위해서다.
+     지도 클릭(역 짓기·옮기기)은 handleMapClick이 event.target이 아니라 clientX/Y와
+     SVG 행렬만 보고, 이벤트는 <svg>까지 그대로 올라가므로 영향이 없다.
+     노선·역은 구역보다 위에 그려지므로 그쪽 클릭도 먼저 잡힌다. */
 }
 
 /* 노선 5색(#E9783C 19° · #E1B735 45° · #55A96A 133° · #3F8EDB 209° · #8E6CC1 267°)과
