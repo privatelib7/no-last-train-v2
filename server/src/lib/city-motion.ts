@@ -51,6 +51,11 @@ export type CityMotionVehicle = {
    * 얼마 발생했는지" 화면에 띄울 때 대기인원 변화를 추측하지 않고 이 값을 그대로 쓴다.
    */
   justBoarded?: number
+  /**
+   * 라이브 엔진이 있는 도시에서만 채워진다 — 지금 이 차량에 타고 있는 인원.
+   * justBoarded와 같은 이유로 선택 필드다(DB 폴백 경로에는 없다).
+   */
+  onboardCount?: number
 }
 
 export type CityMotionSnapshot = {

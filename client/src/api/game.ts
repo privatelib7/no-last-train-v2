@@ -252,6 +252,8 @@ export type CityMotionVehicle = {
   renderSegmentProgressMinutes: number
   /** 라이브 엔진이 있는 도시에서만 채워진다 — 바로 이전 프레임 사이 이 차량이 실제로 태운 인원수 */
   justBoarded?: number
+  /** 지금 이 차량에 타고 있는 인원 (라이브 엔진이 있을 때만) */
+  onboardCount?: number
 }
 
 export type TransitMotionPhysics = {

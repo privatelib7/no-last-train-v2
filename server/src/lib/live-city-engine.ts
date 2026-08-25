@@ -23,6 +23,7 @@ import type { Line, Vehicle, Station, Passenger, GameEvent, Policy, CityStatus }
 import {
   advanceVehicleMotion,
   expressStopStationIds,
+  headwayHoldFactors,
   stationDwellMinutes,
   type MotionStation,
 } from './vehicle-motion'
@@ -404,15 +405,18 @@ export function advanceFrame(engine: LiveCityEngine, now: number): void {
     if (line.status !== 'OPERATING') continue
     if (line.stations.length < 2) continue
     const expressStops = expressStopStationIds(line.stations)
+    // 앞차와 너무 붙은 차량만 조금씩 늦춰 노선 전체에 고르게 퍼지게 한다
+    const holdFactors = headwayHoldFactors(line.stations, line.mode, line.vehicles.filter(isVehicleInService))
 
     for (const vehicle of line.vehicles) {
       if (!isVehicleInService(vehicle)) continue
 
       const baseDwell = stationDwellMinutes(line.mode)
       const storedProgress = vehicle.segmentProgressMinutes || 0
-      const stepMinutes = storedProgress < -baseDwell
+      const hold = holdFactors.get(vehicle.id) ?? 1
+      const stepMinutes = (storedProgress < -baseDwell
         ? Math.min(elapsedGameMinutes, -storedProgress)
-        : elapsedGameMinutes
+        : elapsedGameMinutes) * hold
       if (stepMinutes <= 0) continue
 
       const motion = advanceVehicleMotion(line.stations, {
@@ -786,6 +790,7 @@ export function renderLiveMotionSnapshot(engine: LiveCityEngine, now: number): C
     vehicles: snapshot.vehicles.map(v => ({
       ...v,
       justBoarded: engine.justBoardedByVehicleId.get(v.id) ?? 0,
+      onboardCount: engine.onboard.get(v.id)?.length ?? 0,
     })),
   }
 }

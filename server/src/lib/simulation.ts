@@ -7,7 +7,7 @@ import {
   isManagementGoalDeadlineMissed,
   resolveManagementGoal,
 } from './economy'
-import { advanceVehicleMotion, expressStopStationIds, stationDwellMinutes } from './vehicle-motion'
+import { advanceVehicleMotion, expressStopStationIds, headwayHoldFactors, stationDwellMinutes } from './vehicle-motion'
 import { isVehicleInService } from './vehicle-service'
 import { calcServiceScore } from './service-score'
 import { SIM, dayIndexOfTick, gameHourOfTick } from '@/types/game'
@@ -583,6 +583,8 @@ async function moveVehiclesAndBoard(
     const expressStops = expressStopStationIds(stationOrder)
 
     const orderedVehicles = line.vehicles.slice().sort((a, b) => a.id.localeCompare(b.id))
+    // 라이브 엔진과 같은 규칙 — 앞차와 붙은 차량을 늦춰 노선에 고르게 퍼뜨린다.
+    const holdFactors = headwayHoldFactors(stationOrder, line.mode, orderedVehicles.filter(isVehicleInService))
     for (const vehicle of orderedVehicles) {
       if (!isVehicleInService(vehicle)) continue
 
@@ -591,9 +593,10 @@ async function moveVehiclesAndBoard(
       // 빠져나오는 연출이 한 틱에 통째로 스킵되지 않도록.
       const baseDwell = stationDwellMinutes(line.mode)
       const storedProgress = vehicle.segmentProgressMinutes || 0
-      const stepMinutes = storedProgress < -baseDwell
+      const hold = holdFactors.get(vehicle.id) ?? 1
+      const stepMinutes = (storedProgress < -baseDwell
         ? Math.min(SIM.GAME_MINUTES_PER_TICK, -storedProgress)
-        : SIM.GAME_MINUTES_PER_TICK
+        : SIM.GAME_MINUTES_PER_TICK) * hold
 
       const motion = advanceVehicleMotion(stationOrder, {
         currentStationId: vehicle.currentStationId ?? stationOrder[0].id,
