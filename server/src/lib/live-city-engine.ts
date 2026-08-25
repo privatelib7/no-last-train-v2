@@ -46,7 +46,7 @@ import {
   type CityMotionBase,
   type CityMotionSnapshot,
 } from './city-motion'
-import { SIM, dayIndexOfTick } from '@/types/game'
+import { SIM, dayIndexOfTick, gameHourOfTick } from '@/types/game'
 import type { StationSnapshot } from '@/types/game'
 
 /** 한 프레임에서 소화하는 실시간 경과의 상한 — GC 정지 등으로 호출이 밀려도 차량이 순간이동하지 않게 막는다 */
@@ -451,7 +451,7 @@ function buildStationSnapshots(engine: LiveCityEngine): StationSnapshot[] {
 /** simulation.ts의 경제 틱 한 번 분량(승객 생성 → 경제 계산 → 정책 평가 → SimTick 기록)을 메모리 상태로 수행한다 */
 async function runSingleEconomicTick(engine: LiveCityEngine): Promise<void> {
   const tickNumber = engine.currentTick + 1
-  const gameTimeHour = (tickNumber / SIM.TICKS_PER_GAME_HOUR) % 24
+  const gameTimeHour = gameHourOfTick(tickNumber)
   const dayIndex = dayIndexOfTick(tickNumber)
   // 시간대·요일 배율은 그 맵의 실측 승하차에서 뽑은 프로필이 준다 (simulation.ts와 같은 값).
   const demandMult = demandMultiplier(engine.mapKey, gameTimeHour, dayIndex)

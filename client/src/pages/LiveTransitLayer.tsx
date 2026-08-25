@@ -1,4 +1,5 @@
 import { memo, useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { gameHourOfTick } from '../api/game'
 import type { CityMotionSnapshot, CityState, GameLine, Station, TransitMotionPhysics } from '../api/game'
 import { resolveSmoothVehiclePosition, type LastMoveState } from '../lib/smooth-vehicle'
 import {
@@ -184,7 +185,7 @@ function LiveTransitLayer({
     ? visualTickRef.current
     : currentTick
 
-  const gameHour = (continuousTick / TICKS_PER_HOUR) % 24
+  const gameHour = gameHourOfTick(continuousTick)
   const isWeekend = Math.floor(continuousTick / TICKS_PER_DAY) % 7 >= 5
   const journeyTime = continuousTick * CITIZEN_TIME_SCALE
 

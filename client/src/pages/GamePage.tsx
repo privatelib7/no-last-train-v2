@@ -5,6 +5,7 @@ import {
   CONGESTION_WARN,
   executeCityAction,
   fetchCity,
+  gameHourOfTick,
   planCityCommand,
   TICKS_PER_DAY,
   TICKS_PER_HOUR,
@@ -1589,7 +1590,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     }
   }
   const selectedStation = stationById.get(selectedStationId) ?? null
-  const gameHour = (continuousTick / TICKS_PER_HOUR) % 24
+  const gameHour = gameHourOfTick(continuousTick)
   const isWeekend = Math.floor(continuousTick / TICKS_PER_DAY) % 7 >= 5
   const elapsedSeconds = continuousTick * (LIVE_TICK_MS / 1000)
   // 사이드바 차량 상태는 motion 스냅샷만 가볍게 읽는다(전체 리렌더 유발 없음).
