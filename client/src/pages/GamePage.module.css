@@ -1098,6 +1098,16 @@
   background: #fff;
 }
 
+/* ＋로 예약해 둔 방식 — 두 역을 클릭할 때까지 눌린 상태로 둔다.
+   막 누른 직후엔 커서가 버튼 위에 있으므로 :hover 규칙보다 세게 잡는다 */
+.newLineRow .newLineArmed,
+.newLineRow .newLineArmed:hover:not(:disabled) {
+  border-style: solid;
+  border-color: var(--gp-border-strong);
+  background: var(--gp-active-bg);
+  color: var(--gp-text-on-active-alt);
+}
+
 .lineTabs i {
   width: 8px;
   height: 8px;

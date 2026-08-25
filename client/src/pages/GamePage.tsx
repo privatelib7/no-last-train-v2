@@ -37,10 +37,10 @@ interface Props {
 
 type DragTarget = { kind: 'STATION'; id: string } | null
 
-type StationLinkDrag = {
+/** 노선 끝 배지에서 시작한 연장 드래그 — 배지가 붙은 종점에서 다른 역으로 끈다 */
+type LineEndDrag = {
+  lineId: string
   stationId: string
-  /** 노선 끝 배지에서 시작한 드래그 — 선택 노선 대신 이 노선을 잇는다 */
-  lineId?: string
   startX: number
   startY: number
   x: number
@@ -186,17 +186,6 @@ function orderedVehicles(line: GameLine) {
   return line.vehicles.slice().sort((a, b) => a.id.localeCompare(b.id))
 }
 
-/** 선택 노선의 빈 노선이거나, 한쪽이 종점이고 다른 쪽이 노선 밖이면 연장 가능 */
-function canExtendLine(line: GameLine, fromStationId: string, toStationId: string) {
-  const stations = orderedStations(line)
-  if (stations.length === 0) return true
-  const fromOn = stations.some(station => station.id === fromStationId)
-  const toOn = stations.some(station => station.id === toStationId)
-  if (fromOn === toOn) return false
-  const onLineId = fromOn ? fromStationId : toStationId
-  return stations[0].id === onLineId || stations[stations.length - 1].id === onLineId
-}
-
 function lineHasStation(line: GameLine, stationId: string) {
   return line.lineStations.some(item => item.stationId === stationId)
 }
@@ -233,8 +222,10 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const [selectedStationId, setSelectedStationId] = useState('')
   const [renameValue, setRenameValue] = useState('')
   const [moveStationMode, setMoveStationMode] = useState(false)
+  /** ＋ 지하철·＋ 버스로 예약해 둔 새 노선 방식 — 다음에 이어 클릭한 두 역을 이 방식으로 잇는다 */
+  const [newLineMode, setNewLineMode] = useState<'SUBWAY' | 'BUS' | null>(null)
   const [legendOpen, setLegendOpen] = useState(false)
-  const [stationDrag, setStationDrag] = useState<StationLinkDrag | null>(null)
+  const [lineEndDrag, setLineEndDrag] = useState<LineEndDrag | null>(null)
   const [segmentDrag, setSegmentDrag] = useState<SegmentDrag | null>(null)
   const [dragTarget, setDragTarget] = useState<DragTarget>(null)
   const [mapView, setMapView] = useState<MapView>(INITIAL_MAP_VIEW)
@@ -263,7 +254,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const [remoteCursors, setRemoteCursors] = useState<RemoteCursor[]>([])
   const cursorPosRef = useRef<{ x: number; y: number; ts: number } | null>(null)
   const cursorLastSentRef = useRef<{ x: number; y: number } | null>(null)
-  const stationDragRef = useRef<StationLinkDrag | null>(null)
+  const lineEndDragRef = useRef<LineEndDrag | null>(null)
   const segmentDragRef = useRef<SegmentDrag | null>(null)
   const suppressStationClick = useRef(false)
   const suppressLineClick = useRef(false)
@@ -273,7 +264,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const stateRef = useRef<CityState | null>(null)
   const performActionRef = useRef<((action: CityAction) => Promise<CityState | null>) | null>(null)
   const undoLastSegmentRef = useRef<(() => Promise<void>) | null>(null)
-  const createLineRef = useRef<((mode: 'SUBWAY' | 'BUS') => Promise<void>) | null>(null)
+  const armNewLineRef = useRef<((mode: 'SUBWAY' | 'BUS') => void) | null>(null)
   const setLineVehicleServiceRef = useRef<((inService: boolean) => Promise<void>) | null>(null)
   const busyRef = useRef(false)
   const selectedLineIdRef = useRef('')
@@ -391,6 +382,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
         setSelectedStationId('')
         setStationBuildMode(false)
         setMoveStationMode(false)
+        setNewLineMode(null)
         setError(null)
         if (document.activeElement instanceof HTMLElement) {
           const tag = document.activeElement.tagName
@@ -433,6 +425,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
         event.preventDefault()
         setStationBuildMode(current => !current)
         setMoveStationMode(false)
+        setNewLineMode(null)
         setSelectedVehicleId('')
         setError(null)
         return
@@ -440,13 +433,13 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
 
       if (event.key === 'c' || event.key === 'C') {
         event.preventDefault()
-        void createLineRef.current?.('SUBWAY')
+        armNewLineRef.current?.('SUBWAY')
         return
       }
 
       if (event.key === 'v' || event.key === 'V') {
         event.preventDefault()
-        void createLineRef.current?.('BUS')
+        armNewLineRef.current?.('BUS')
         return
       }
 
@@ -956,13 +949,14 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       }
       const next = await loadCity()
       if (pendingUndo) pushSegmentUndo(pendingUndo)
-      // 방금 만든 노선을 선택해 둔다 — 이어서 역을 클릭하면 새 노선이 아니라 연장이 된다
+      // 방금 만든 노선을 선택해 둔다 — 사이드바·종점 배지가 바로 그 노선을 가리킨다
       if (action.type === 'CREATE_CONNECTED_LINE' && result.line) selectLine(result.line.id)
       if (action.type === 'REMOVE_VEHICLE') setSelectedVehicleId('')
       if (action.type === 'RESET_CITY') {
         segmentUndoStackRef.current = []
         setStationBuildMode(false)
         setMoveStationMode(false)
+        setNewLineMode(null)
         setSelectedVehicleId('')
         setSelectedStationId('')
       }
@@ -1077,37 +1071,18 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     }
   }
 
-  const createLine = async (mode: 'SUBWAY' | 'BUS') => {
-    if (busyRef.current) return
-    busyRef.current = true
-    setBusy(true)
+  // ＋ 버튼은 빈 노선을 만들지 않고 "다음에 이어 클릭할 두 역을 이 방식으로 잇는다"를 예약한다.
+  // 역이 없는 노선에는 종점 배지가 붙지 않아 지도에서 첫 구간을 놓을 방법이 없기 때문이다.
+  const armNewLine = (mode: 'SUBWAY' | 'BUS') => {
+    setNewLineMode(current => (current === mode ? null : mode))
+    setStationBuildMode(false)
+    setMoveStationMode(false)
+    // 예약 전에 골라 둔 역이 첫 클릭으로 오해되지 않게 선택을 비운다
+    setSelectedStationId('')
+    setRenameValue('')
     setError(null)
-    try {
-      const result = await executeCityAction(cityId, { type: 'CREATE_LINE', mode }, session?.token)
-      if (result.line) {
-        const line: GameLine = { ...result.line, lineStations: [], vehicles: [], policies: [] }
-        const cost = (mode === 'BUS'
-          ? stateRef.current?.economyRules.buildCosts.busLine
-          : stateRef.current?.economyRules.buildCosts.subwayLine) ?? 0
-        setState(current => current && {
-          ...current,
-          city: { ...current.city, lines: [...current.city.lines, line], cashBalance: current.city.cashBalance - cost },
-        })
-      }
-      await loadCity()
-      if (result.line?.id) {
-        setSelectedLineId(result.line.id)
-        setSelectedVehicleId('')
-        setSelectedStationId('')
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '노선 생성 오류')
-    } finally {
-      busyRef.current = false
-      setBusy(false)
-    }
   }
-  createLineRef.current = createLine
+  armNewLineRef.current = armNewLine
 
   const selectLine = (lineId: string) => {
     setSelectedLineId(lineId)
@@ -1194,22 +1169,23 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     setSegmentDrag(next)
   }
 
-  const beginStationLinkDrag = (event: PointerEvent<SVGGElement>, stationId: string, lineId?: string) => {
+  // 노선 연장은 종점의 호선 배지를 역으로 끌어다 놓는 것으로만 한다
+  const beginLineEndDrag = (event: PointerEvent<SVGGElement>, lineId: string, stationId: string) => {
     if (event.button !== 0 || busy || stationBuildMode || moveStationMode) return
     event.stopPropagation()
-    // 배지에서 끌기 시작하면 그 노선을 선택해 둔다 — 고스트 선 색과 사이드바가 따라온다
-    if (lineId && lineId !== selectedLineId) selectLine(lineId)
-    const next: StationLinkDrag = {
-      stationId,
+    // 끌기 시작하면 그 노선을 선택해 둔다 — 고스트 선 색과 사이드바가 따라온다
+    if (lineId !== selectedLineId) selectLine(lineId)
+    const next: LineEndDrag = {
       lineId,
+      stationId,
       startX: event.clientX,
       startY: event.clientY,
       x: event.clientX,
       y: event.clientY,
       active: false,
     }
-    stationDragRef.current = next
-    setStationDrag(next)
+    lineEndDragRef.current = next
+    setLineEndDrag(next)
   }
 
   const handleStationClick = (event: MouseEvent<SVGGElement>, stationId: string) => {
@@ -1231,36 +1207,32 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     setRenameValue(station?.name ?? '')
     if (!prevSelectedId) return
 
-    // 둘 다 선택 노선 위면 단순 재선택
-    if (selectedLine && lineHasStation(selectedLine, prevSelectedId) && lineHasStation(selectedLine, stationId)) {
+    // 둘 다 선택 노선 위면 같은 구간을 겹쳐 깔지 않고 단순 재선택.
+    // ＋로 방식을 예약해 둔 경우는 나란히 가는 노선을 일부러 깔려는 것이므로 그대로 만든다.
+    if (
+      !newLineMode && selectedLine
+      && lineHasStation(selectedLine, prevSelectedId)
+      && lineHasStation(selectedLine, stationId)
+    ) {
       return
     }
 
-    // 연결에 성공하면 마지막 선택 역(B)을 자동 해제
+    // 노선을 만드는 데 성공하면 마지막 선택 역(B)과 ＋ 예약을 자동 해제
     const clearSelectionOnSuccess = (next: CityState | null) => {
       if (!next) return
       setSelectedStationId('')
       setRenameValue('')
+      setNewLineMode(null)
     }
 
-    // ＋로 만든(또는 플레이어 소유) 운영 노선을 먼저 이어준다.
-    const isPlayerOperatedLine = !!selectedLine?.playerId
-    if (selectedLine && isPlayerOperatedLine && canExtendLine(selectedLine, prevSelectedId, stationId)) {
-      void performAction({
-        type: 'BUILD_SEGMENT',
-        lineId: selectedLine.id,
-        fromStationId: prevSelectedId,
-        toStationId: stationId,
-      }).then(clearSelectionOnSuccess)
-      return
-    }
-
-    // 이을 노선이 없으면 두 역을 잇는 새 지하철 노선을 만든다.
+    // 두 역을 잇는 새 노선을 만든다 — ＋ 버튼으로 예약해 둔 방식이 있으면 그 방식으로,
+    // 없으면 지하철로. 기존 노선 연장은 종점의 호선 배지를 끌어다 놓는 것으로만 하므로
+    // 여기서 이어 붙이지 않는다.
     // 역 짓기·역 옮기기 중에는 클릭 뜻이 달라지므로 건너뛴다.
     if (stationBuildMode || moveStationMode) return
     void performAction({
       type: 'CREATE_CONNECTED_LINE',
-      mode: 'SUBWAY',
+      mode: newLineMode ?? 'SUBWAY',
       fromStationId: prevSelectedId,
       toStationId: stationId,
     }).then(clearSelectionOnSuccess)
@@ -1366,18 +1338,18 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     zoomMap(event.deltaY > 0 ? 1.16 : 0.86)
   }
 
-  // 역에서 다른 역으로 끌어당겨 선로 연결
-  const draggedStationId = stationDrag?.stationId
+  // 종점의 호선 배지를 다른 역으로 끌어당겨 노선 연장
+  const draggedLineEndKey = lineEndDrag ? `${lineEndDrag.lineId}:${lineEndDrag.stationId}` : null
   useEffect(() => {
-    if (!draggedStationId) return
+    if (!draggedLineEndKey) return
 
     const handlePointerMove = (event: globalThis.PointerEvent) => {
-      const current = stationDragRef.current
+      const current = lineEndDragRef.current
       if (!current) return
       const active = current.active || Math.hypot(event.clientX - current.startX, event.clientY - current.startY) > 6
       const next = { ...current, x: event.clientX, y: event.clientY, active }
-      stationDragRef.current = next
-      setStationDrag(next)
+      lineEndDragRef.current = next
+      setLineEndDrag(next)
       if (!active) return
       const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-station-id]')
       const targetId = target?.getAttribute('data-station-id')
@@ -1385,25 +1357,24 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     }
 
     const handlePointerUp = (event: globalThis.PointerEvent) => {
-      const current = stationDragRef.current
-      stationDragRef.current = null
-      setStationDrag(null)
+      const current = lineEndDragRef.current
+      lineEndDragRef.current = null
+      setLineEndDrag(null)
       setDragTarget(null)
       if (!current?.active) return
       suppressStationClick.current = true
       window.setTimeout(() => { suppressStationClick.current = false }, 0)
       const targetId = document.elementFromPoint(event.clientX, event.clientY)
         ?.closest('[data-station-id]')?.getAttribute('data-station-id')
-      const dragLineId = current.lineId ?? selectedLineId
-      if (!targetId || targetId === current.stationId || !dragLineId) return
+      if (!targetId || targetId === current.stationId) return
       const cityState = stateRef.current
-      const dragLine = cityState?.city.lines.find(item => item.id === dragLineId)
+      const dragLine = cityState?.city.lines.find(item => item.id === current.lineId)
       const fromStation = cityState?.city.stations.find(s => s.id === current.stationId)
       const toStation = cityState?.city.stations.find(s => s.id === targetId)
       if (!dragLine || !fromStation || !toStation) return
       void performActionRef.current?.({
         type: 'BUILD_SEGMENT',
-        lineId: dragLineId,
+        lineId: current.lineId,
         fromStationId: current.stationId,
         toStationId: targetId,
       })
@@ -1415,7 +1386,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       document.removeEventListener('pointermove', handlePointerMove)
       document.removeEventListener('pointerup', handlePointerUp)
     }
-  }, [draggedStationId, selectedLineId])
+  }, [draggedLineEndKey])
 
   // 선로 구간을 끌어 다른 역을 경유하도록 삽입
   const draggedSegmentKey = segmentDrag ? `${segmentDrag.lineId}:${segmentDrag.fromStationId}` : null
@@ -1565,13 +1536,19 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     isHead: boolean; x: number; y: number
   }> = []
   for (const line of sortedLines) {
-    if (line.lineStations.length < 2) continue
     const stops = orderedStations(line)
+    if (stops.length === 0) continue
     const label = line.name.match(/\d+/)?.[0] ?? line.name.slice(0, 1)
-    for (const [isHead, at, prev] of [
-      [true, stops[0], stops[1]] as const,
-      [false, stops[stops.length - 1], stops[stops.length - 2]] as const,
-    ]) {
+    // [종점, 방향을 잡아 줄 직전 역]. 역이 하나만 남은 노선(구간을 떼어내다 남은 경우)도
+    // 배지로 다시 연장할 수 있어야 하므로, 직전 역 대신 오른쪽 한 칸을 넣어 배지를 역 왼쪽에
+    // 세운다 — 역 이름(위)·차고지 표시(아래)·대기 승객 수(오른쪽)를 모두 피한 자리다.
+    const ends: Array<readonly [boolean, Station, { posX: number; posY: number }]> = stops.length === 1
+      ? [[true, stops[0], { posX: stops[0].posX + 1, posY: stops[0].posY }]]
+      : [
+          [true, stops[0], stops[1]],
+          [false, stops[stops.length - 1], stops[stops.length - 2]],
+        ]
+    for (const [isHead, at, prev] of ends) {
       // 직전 역 → 종점 방향 바깥으로 내보내 역 표시를 가리지 않게 한다
       const dx = at.posX - prev.posX
       const dy = at.posY - prev.posY
@@ -1890,8 +1867,22 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
             ))}
           </div>
           <div className={styles.newLineRow}>
-            <button onClick={() => void createLine('SUBWAY')} disabled={busy || isGameOver}>＋ 지하철 · {formatMoney(state.economyRules.buildCosts.subwayLine)} · C</button>
-            <button onClick={() => void createLine('BUS')} disabled={busy || isGameOver}>＋ 버스 · {formatMoney(state.economyRules.buildCosts.busLine)} · V</button>
+            <button
+              className={newLineMode === 'SUBWAY' ? styles.newLineArmed : ''}
+              aria-pressed={newLineMode === 'SUBWAY'}
+              onClick={() => armNewLine('SUBWAY')}
+              disabled={busy || isGameOver}
+            >{newLineMode === 'SUBWAY'
+              ? '지하철 · 이을 두 역 클릭'
+              : `＋ 지하철 · ${formatMoney(state.economyRules.buildCosts.subwayLine)} · C`}</button>
+            <button
+              className={newLineMode === 'BUS' ? styles.newLineArmed : ''}
+              aria-pressed={newLineMode === 'BUS'}
+              onClick={() => armNewLine('BUS')}
+              disabled={busy || isGameOver}
+            >{newLineMode === 'BUS'
+              ? '버스 · 이을 두 역 클릭'
+              : `＋ 버스 · ${formatMoney(state.economyRules.buildCosts.busLine)} · V`}</button>
           </div>
           {selectedLine && (
             <button
@@ -2051,6 +2042,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
               onClick={() => {
                 setMoveStationMode(current => !current)
                 setStationBuildMode(false)
+                setNewLineMode(null)
                 setError(null)
               }}
               disabled={busy}
@@ -2139,6 +2131,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                 onClick={() => {
                   setStationBuildMode(current => !current)
                   setMoveStationMode(false)
+                  setNewLineMode(null)
                   setSelectedVehicleId('')
                   setError(null)
                 }}
@@ -2277,11 +2270,12 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
               )
             })()}
 
-            {stationDrag?.active && (() => {
+            {lineEndDrag?.active && (() => {
               const matrix = mapRef.current?.getScreenCTM()
-              const source = stationById.get(stationDrag.stationId)
+              const source = stationById.get(lineEndDrag.stationId)
+              const line = sortedLines.find(item => item.id === lineEndDrag.lineId)
               if (!matrix || !source) return null
-              const cursor = new DOMPoint(stationDrag.x, stationDrag.y).matrixTransform(matrix.inverse())
+              const cursor = new DOMPoint(lineEndDrag.x, lineEndDrag.y).matrixTransform(matrix.inverse())
               return (
                 <line
                   x1={source.posX}
@@ -2290,7 +2284,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                   y2={cursor.y}
                   className={styles.linkGhost}
                   style={{
-                    stroke: LINE_COLORS[selectedLine?.color ?? 'RED'],
+                    stroke: LINE_COLORS[line?.color ?? 'RED'],
                     strokeWidth: 0.95 * mapScale,
                     strokeDasharray: `${1.1 * mapScale} ${0.8 * mapScale}`,
                   }}
@@ -2315,7 +2309,6 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                   transform={`translate(${point.x} ${point.y}) scale(${mapScale})`}
                   className={`${styles.stationGroup}${isDepotTerminus ? ` ${styles.depotTerminusStation}` : ''}`}
                   onClick={event => handleStationClick(event, station.id)}
-                  onPointerDown={event => beginStationLinkDrag(event, station.id)}
                   role="button"
                   tabIndex={0}
                   data-station-id={station.id}
@@ -2360,7 +2353,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                 key={badge.id}
                 transform={`translate(${badge.x} ${badge.y}) scale(${mapScale})`}
                 className={`${styles.lineEndBadge}${badge.line.status === 'SUSPENDED' ? ` ${styles.closedLine}` : ''}`}
-                onPointerDown={event => beginStationLinkDrag(event, badge.station.id, badge.line.id)}
+                onPointerDown={event => beginLineEndDrag(event, badge.line.id, badge.station.id)}
                 onClick={event => event.stopPropagation()}
                 role="button"
                 tabIndex={0}
