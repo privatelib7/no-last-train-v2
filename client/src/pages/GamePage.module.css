@@ -1132,6 +1132,16 @@
   background: #fff;
 }
 
+/* ＋로 예약해 둔 방식 — 두 역을 클릭할 때까지 눌린 상태로 둔다.
+   막 누른 직후엔 커서가 버튼 위에 있으므로 :hover 규칙보다 세게 잡는다 */
+.newLineRow .newLineArmed,
+.newLineRow .newLineArmed:hover:not(:disabled) {
+  border-style: solid;
+  border-color: var(--gp-border-strong);
+  background: var(--gp-active-bg);
+  color: var(--gp-text-on-active-alt);
+}
+
 .lineTabs i {
   width: 8px;
   height: 8px;
@@ -2241,26 +2251,6 @@
   pointer-events: none;
 }
 
-/* 예전 차고지 위치(노선 종점) 역만 회색 테두리 + 라벨 */
-.depotTerminusStation .stationNode {
-  stroke: #9a9187;
-}
-
-.depotTerminusStation .transferCore {
-  fill: #9a9187;
-}
-
-.depotTerminusLabel {
-  fill: #7f776e;
-  font-size: 1.35px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  paint-order: stroke;
-  stroke: var(--gp-map-label-halo);
-  stroke-width: 0.55px;
-  pointer-events: none;
-}
-
 .stationGroup:hover .stationNode {
   fill: var(--gp-station-hover);
 }
@@ -2866,4 +2856,24 @@
   stroke: rgba(255, 255, 255, 0.92);
   stroke-width: 0.42px;
   pointer-events: none;
+}
+
+/* 밤에만 보이는 지형 윤곽 — 장막 위에 덧그려 경계가 묻히지 않게 한다 */
+.nightOutlines {
+  fill: none;
+  stroke: var(--gp-map-night-ink);
+  stroke-width: 0.28;
+  stroke-linejoin: round;
+  opacity: calc(var(--night, 0) * 0.55);
+  pointer-events: none;
+  transition: opacity 700ms linear;
+}
+
+/* 게임 시각에 따라 저무는 지도 배경 — 진하기는 --night 와 --gp-map-night-max 가 정한다 */
+.nightVeil {
+  fill: var(--gp-map-night);
+  opacity: calc(var(--night, 0) * var(--gp-map-night-max));
+  pointer-events: none;
+  /* 밤 정도는 0.5초마다 샘플링되므로 그 사이를 CSS가 메워 계단이 안 보이게 한다 */
+  transition: opacity 700ms linear;
 }

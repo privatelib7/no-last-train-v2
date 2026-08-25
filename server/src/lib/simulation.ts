@@ -10,7 +10,7 @@ import {
 import { advanceVehicleMotion, expressStopStationIds, headwayHoldFactors, stationDwellMinutes } from './vehicle-motion'
 import { isVehicleInService } from './vehicle-service'
 import { calcServiceScore } from './service-score'
-import { SIM, dayIndexOfTick } from '@/types/game'
+import { SIM, dayIndexOfTick, gameHourOfTick } from '@/types/game'
 import { demandMultiplier, originWeight, destinationScore } from './demand-profile'
 import type { SimResult, TickHighlight, StationSnapshot } from '@/types/game'
 import type { Passenger, Vehicle, Station, Line, GameEvent } from '@prisma/client'
@@ -192,7 +192,7 @@ async function simulateTicksUnlocked(cityId: string, count: number): Promise<Sim
 
   for (let i = 0; i < count; i++) {
     const tickNumber = baseTick + ticksProcessed + 1
-    const gameTimeHour = (tickNumber / SIM.TICKS_PER_GAME_HOUR) % 24
+    const gameTimeHour = gameHourOfTick(tickNumber)
     const dayIndex = dayIndexOfTick(tickNumber)
     // 시간대·요일별 수요 배율은 그 맵의 실제 지하철 승하차에서 뽑은 프로필이 준다.
     // 주말 곡선에 출퇴근 피크가 없는 것도, 부산이 서울보다 낮에 붐비는 것도 데이터가 그래서다.

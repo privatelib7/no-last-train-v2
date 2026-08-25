@@ -18,6 +18,10 @@ export type District = {
   /** 'M x y L x y … Z' 절대좌표. 곡선·상대명령 없음 — 테스트가 이 형식에 기댄다 */
   d: string
   label: [number, number]
+  /** d를 파싱해 둔 것. 시민이 살 자리를 구역 안에서 뽑을 때 쓴다(mobility.ts) */
+  rings: Array<Array<[number, number]>>
+  /** [minX, minY, maxX, maxY] — 표본을 던질 범위 */
+  bbox: [number, number, number, number]
 }
 
 export type CityMapDef = {
@@ -51,8 +55,48 @@ function isLandFrom(base64: string) {
   }
 }
 
+// 'M x y L x y … Z' 를 링으로 되돌린다. 빌드가 이 형식만 내보내기로 계약돼 있어서
+// (build-map-profile.mjs 헤더) 정규식 하나로 끝난다 — SVG 파서가 필요 없다.
+function parseRings(d: string): Array<Array<[number, number]>> {
+  return d.split('Z').filter(sub => /\d/.test(sub)).map(sub => {
+    const nums = sub.match(/-?\d+(?:\.\d+)?/g)!.map(Number)
+    const ring: Array<[number, number]> = []
+    for (let i = 0; i + 1 < nums.length; i += 2) ring.push([nums[i], nums[i + 1]])
+    return ring
+  })
+}
+
+function inRing(x: number, y: number, ring: Array<[number, number]>) {
+  let hit = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j]
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit
+  }
+  return hit
+}
+
+/** evenodd — 안쪽 링이 저절로 구멍이 된다(구역 안의 녹지 등) */
+export function pointInDistrict(x: number, y: number, district: District) {
+  const [minX, minY, maxX, maxY] = district.bbox
+  if (x < minX || x > maxX || y < minY || y > maxY) return false
+  return district.rings.reduce((acc, ring) => acc !== inRing(x, y, ring), false)
+}
+
+function hydrate(district: Omit<District, 'rings' | 'bbox'>): District {
+  const rings = parseRings(district.d)
+  const bbox: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity]
+  for (const ring of rings) for (const [x, y] of ring) {
+    if (x < bbox[0]) bbox[0] = x
+    if (y < bbox[1]) bbox[1] = y
+    if (x > bbox[2]) bbox[2] = x
+    if (y > bbox[3]) bbox[3] = y
+  }
+  return { ...district, rings, bbox }
+}
+
 // 모듈 로드 때 한 번만 만든다. getCityMap이 매번 «같은 객체»를 돌려줘야
 // GamePage의 useMemo와 memo(LiveTransitLayer)가 부모 리렌더에서 살아남는다.
+// 경로 파싱도 여기서 한 번만 한다(도시당 40개 안팎).
 const CITY_MAPS: Record<string, CityMapDef> = Object.fromEntries(
   Object.entries(profile.cities).map(([key, city]) => [key, {
     key,
@@ -61,7 +105,7 @@ const CITY_MAPS: Record<string, CityMapDef> = Object.fromEntries(
     water: city.water,
     reliefBands: city.reliefBands,
     contours: city.contours,
-    districts: city.districts as District[],
+    districts: (city.districts as Array<Omit<District, 'rings' | 'bbox'>>).map(hydrate),
     guLabels: city.guLabels as Array<{ name: string; at: [number, number] }>,
     isLand: isLandFrom(city.landMask),
   }]),

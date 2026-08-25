@@ -2,11 +2,40 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { getCityMap } from '../src/maps'
 import {
+  CITIZEN_ERRAND_RANGE,
+  CITIZEN_WALK_RANGE,
   advanceCitizenJourneys,
   createCitizenJourneys,
   locateCitizen,
   pathStaysOnLand,
 } from '../src/mobility'
+
+const distance = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+  Math.hypot(a.x - b.x, a.y - b.y)
+
+const station = (id: string, posX: number, posY: number, type: 'RESIDENTIAL' | 'COMMERCIAL') => ({
+  id,
+  name: id.toUpperCase(),
+  type,
+  capacity: 1000,
+  posX,
+  posY,
+})
+
+const subwayLine = (stations: Array<ReturnType<typeof station>>) => ({
+  id: 'line',
+  playerId: null,
+  color: 'RED' as const,
+  mode: 'SUBWAY' as const,
+  name: 'Line',
+  status: 'OPERATING' as const,
+  depotX: stations[0].posX,
+  depotY: stations[0].posY,
+  lineStations: stations.map((item, order) => ({ stationId: item.id, order, station: item })),
+  vehicles: [],
+  policies: [],
+  actionLogs: [],
+})
 
 test('keeps ambient citizens visible when a city has no operating lines', () => {
   const map = getCityMap('SEOUL')
@@ -20,7 +49,7 @@ test('keeps ambient citizens visible when a city has no operating lines', () => 
     map,
   })
 
-  assert.ok(journeys.length >= 24)
+  assert.ok(journeys.length >= 32)
   assert.ok(journeys.every(journey => journey.accessMode === 'CITY'))
   assert.ok(journeys.every(journey => journey.landSafe))
 
@@ -35,27 +64,10 @@ test('keeps ambient citizens visible when a city has no operating lines', () => 
   }
 })
 
-test('keeps station-bound journeys when an operating line exists', () => {
+test('sends only citizens who live near a station toward it', () => {
   const map = getCityMap('SEOUL')
-  const stationA = { id: 'a', name: 'A', type: 'RESIDENTIAL' as const, capacity: 1000, posX: 44, posY: 36 }
-  const stationB = { id: 'b', name: 'B', type: 'COMMERCIAL' as const, capacity: 1000, posX: 48, posY: 36 }
-  const line = {
-    id: 'line',
-    playerId: null,
-    color: 'RED' as const,
-    mode: 'SUBWAY' as const,
-    name: 'Line',
-    status: 'OPERATING' as const,
-    depotX: 44,
-    depotY: 36,
-    lineStations: [
-      { stationId: stationA.id, order: 0, station: stationA },
-      { stationId: stationB.id, order: 1, station: stationB },
-    ],
-    vehicles: [],
-    policies: [],
-    actionLogs: [],
-  }
+  const stationA = station('a', 44, 36, 'RESIDENTIAL')
+  const stationB = station('b', 48, 36, 'COMMERCIAL')
 
   const journeys = createCitizenJourneys({
     seed: 7,
@@ -63,20 +75,105 @@ test('keeps station-bound journeys when an operating line exists', () => {
     gameHour: 8,
     weekend: false,
     stations: [stationA, stationB],
-    lines: [line],
+    lines: [subwayLine([stationA, stationB])],
     map,
   })
 
-  assert.ok(journeys.length >= 24)
-  assert.ok(journeys.every(journey => journey.accessMode === 'SUBWAY'))
-  assert.ok(journeys.every(journey => journey.targetStationId === stationA.id || journey.targetStationId === stationB.id))
+  const stationBound = journeys.filter(journey => journey.accessMode !== 'CITY')
+  assert.ok(stationBound.length > 0, '역세권 시민은 역으로 향해야 한다')
+  assert.ok(
+    stationBound.every(journey => journey.targetStationId === 'a' || journey.targetStationId === 'b'),
+  )
+
+  // 역으로 가는 사람은 모두 걸어갈 만한 거리에 살아야 한다 — 맵 반대편에서 걸어오지 않는다.
+  for (const journey of stationBound) {
+    const target = journey.targetStationId === 'a' ? stationA : stationB
+    assert.ok(
+      distance(journey.home, { x: target.posX, y: target.posY }) <= CITIZEN_WALK_RANGE,
+      `${journey.id}이 ${CITIZEN_WALK_RANGE} 밖에서 역까지 걸어온다`,
+    )
+    for (const leg of journey.legs) {
+      assert.ok(pathStaysOnLand(leg.from, leg.to, map))
+    }
+  }
+})
+
+test('keeps people living in districts that have no station at all', () => {
+  const map = getCityMap('SEOUL')
+  // 도심 한 곳에만 역이 있는 도시 — 나머지 동네도 비어 있으면 안 된다.
+  const downtown = station('a', 44, 36, 'COMMERCIAL')
+  const journeys = createCitizenJourneys({
+    seed: 41,
+    waitingCount: 120,
+    gameHour: 9,
+    weekend: false,
+    stations: [downtown],
+    lines: [subwayLine([downtown])],
+    map,
+  })
+
+  const farFromStation = journeys.filter(
+    journey => distance(journey.home, { x: downtown.posX, y: downtown.posY }) > CITIZEN_WALK_RANGE,
+  )
+  assert.ok(
+    farFromStation.length >= journeys.length * 0.4,
+    `역세권 밖 주민이 ${farFromStation.length}/${journeys.length}명뿐이다`,
+  )
+  // 역이 닿지 않는 주민은 역으로 몰리는 대신 동네에 남는다.
+  assert.ok(farFromStation.every(journey => journey.accessMode === 'CITY'))
+  for (const journey of farFromStation) {
+    for (const leg of journey.legs) {
+      assert.ok(pathStaysOnLand(leg.from, leg.to, map))
+      assert.ok(distance(leg.to, journey.home) <= CITIZEN_ERRAND_RANGE + 0.001)
+    }
+  }
+
+  // 집이 맵 한구석에 뭉치지 않고 도시 전역에 흩어져 있어야 한다.
+  const homesX = journeys.map(journey => journey.home.x)
+  const homesY = journeys.map(journey => journey.home.y)
+  assert.ok(Math.max(...homesX) - Math.min(...homesX) >= 40)
+  assert.ok(Math.max(...homesY) - Math.min(...homesY) >= 40)
+})
+
+test('starts and ends every journey at the same fixed home', () => {
+  const map = getCityMap('BUSAN')
+  const hub = station('a', 52, 58, 'COMMERCIAL')
+  const world = {
+    seed: 99,
+    waitingCount: 60,
+    gameHour: 8,
+    weekend: false,
+    stations: [hub],
+    lines: [subwayLine([hub])],
+    map,
+  }
+
+  let journeys = createCitizenJourneys(world)
+  const homes = new Map(journeys.map(journey => [journey.id, journey.home]))
+
+  // 여러 세대를 돌려도 사람은 살던 자리에서 나와 살던 자리로 돌아온다.
+  for (let step = 1; step <= 40; step++) {
+    journeys = advanceCitizenJourneys({
+      ...world,
+      previous: journeys,
+      journeyTime: step * 4,
+      maxRespawns: Infinity,
+    })
+    for (const journey of journeys) {
+      assert.deepEqual(journey.home, homes.get(journey.id))
+      assert.deepEqual(journey.legs[0].from, journey.home)
+      if (journey.accessMode === 'CITY') {
+        assert.deepEqual(journey.legs[journey.legs.length - 1].to, journey.home)
+      }
+    }
+  }
 })
 
 test('does not teleport citizens that are already walking when a station is built', () => {
   const map = getCityMap('SEOUL')
-  const stationA = { id: 'a', name: 'A', type: 'RESIDENTIAL' as const, capacity: 1000, posX: 44, posY: 36 }
-  const stationB = { id: 'b', name: 'B', type: 'COMMERCIAL' as const, capacity: 1000, posX: 48, posY: 36 }
-  const newStation = { id: 'c', name: 'C', type: 'COMMERCIAL' as const, capacity: 1000, posX: 30, posY: 62 }
+  const stationA = station('a', 44, 36, 'RESIDENTIAL')
+  const stationB = station('b', 48, 36, 'COMMERCIAL')
+  const newStation = station('c', 30, 62, 'COMMERCIAL')
   const world = {
     seed: 7,
     waitingCount: 20,
