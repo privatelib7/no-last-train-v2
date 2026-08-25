@@ -14,7 +14,7 @@
 import { db } from '@/lib/db'
 import { simulateTicks } from '@/lib/simulation'
 import { demandMultiplier, mapDistanceToKm, OD_MODEL } from '@/lib/demand-profile'
-import { SIM } from '@/types/game'
+import { SIM, gameHourOfTick } from '@/types/game'
 import { stationDwellMinutes } from '@/lib/vehicle-motion'
 
 const TICKS_PER_DAY = SIM.TICKS_PER_GAME_HOUR * 24
@@ -79,7 +79,7 @@ async function run(mapKey: string) {
 
   // 1) 시간대 곡선
   const byHour = new Array(24).fill(0)
-  for (const r of rows) byHour[Math.floor((r.createdAtTick / SIM.TICKS_PER_GAME_HOUR) % 24)] += 1
+  for (const r of rows) byHour[Math.floor(gameHourOfTick(r.createdAtTick))] += 1
   const mean = byHour.reduce((a, b) => a + b, 0) / 24
 
   // 3) 통행거리

@@ -1,4 +1,5 @@
 import { memo, useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { gameHourOfTick } from '../api/game'
 import type { CityMotionSnapshot, CityState, GameLine, Station, TransitMotionPhysics } from '../api/game'
 import { resolveSmoothVehiclePosition, type LastMoveState } from '../lib/smooth-vehicle'
 import {
@@ -184,7 +185,7 @@ function LiveTransitLayer({
     ? visualTickRef.current
     : currentTick
 
-  const gameHour = (continuousTick / TICKS_PER_HOUR) % 24
+  const gameHour = gameHourOfTick(continuousTick)
   const isWeekend = Math.floor(continuousTick / TICKS_PER_DAY) % 7 >= 5
   const journeyTime = continuousTick * CITIZEN_TIME_SCALE
 
@@ -326,7 +327,7 @@ function LiveTransitLayer({
       <g
         className={styles.peopleLayer}
         clipPath="url(#city-land-clip)"
-        aria-label={`외부에서 역과 정류장으로 이동하는 시민 ${movingCitizens.length}명`}
+        aria-label={`도시에서 살고 역과 정류장으로 오가는 시민 ${movingCitizens.length}명`}
       >
         {movingCitizens.map(citizen => {
           const { position } = citizen
