@@ -53,6 +53,8 @@ import type { StationSnapshot } from '@/types/game'
 const MAX_FRAME_DT_MS = 1000
 /** 경제 틱 catch-up 루프가 한 번에 처리하는 상한 — 폭주 방지용 상한일 뿐, 평소엔 1회만 돈다 */
 const MAX_ECONOMIC_TICKS_PER_FLUSH = 20
+/** 엔진 시계가 벽시계보다 뒤처졌을 때 한 번의 flush에서 갚는 상한 — 한꺼번에 몰아 돌지 않게 한다 */
+const MAX_CLOCK_CATCHUP_MS = SIM.LIVE_TICK_MS * 4
 
 type EngineVehicle = Vehicle
 
@@ -656,14 +658,64 @@ async function flushToDb(engine: LiveCityEngine): Promise<void> {
 }
 
 /**
+ * 이 엔진이 아닌 다른 경로(API 라우트의 syncCityClock 등)가 도시를 먼저 진행시켰으면
+ * 그 틱 번호를 받아들인다. 그러지 않으면 이미 존재하는 tickNumber로 SimTick을 만들려다
+ * 유니크 충돌이 나고, 그 주기의 flush가 통째로 건너뛰어진다.
+ *
+ * 잔고·행복도까지 합치지는 않는다 — 두 경로가 각자 시뮬레이션한 경제 상태를 섞을 방법이
+ * 없어서, 여기서는 엔진의 인메모리 상태를 진실로 두고 다음 flush에서 덮어쓴다.
+ */
+async function adoptCityClockIfAdvanced(engine: LiveCityEngine): Promise<void> {
+  const city = await db.city.findUnique({
+    where: { id: engine.cityId },
+    select: { currentTick: true, lastTickAt: true },
+  })
+  if (!city || city.currentTick <= engine.currentTick) return
+  engine.currentTick = city.currentTick
+  engine.lastTickAtMs = Math.max(engine.lastTickAtMs, city.lastTickAt.getTime())
+}
+
+/** syncEngineClockToWallTime이 건드리는 부분만 — 테스트에서 엔진 전체를 만들지 않아도 되게 한다 */
+export type EngineClock = Pick<LiveCityEngine, 'lastTickAtMs' | 'economyClockAccumMs'>
+
+/**
+ * 엔진 시계(lastTickAtMs + 아직 틱으로 소비되지 않은 누적분)를 벽시계에 맞춘다.
+ *
+ * 뒤처지는 쪽: 부팅할 때 이미 밀려 있던 lastTickAt을 그대로 물려받고, advanceFrame은
+ * MAX_FRAME_DT_MS 상한 탓에 프레임이 늦은 만큼을 덜 쌓는다. 이 적자를 방치하면 DB의
+ * lastTickAt이 계속 밀린 채로 남고, 그러면 API 프로세스의 syncCityClock이 "이 도시는
+ * 밀렸다"고 보고 같은 도시를 이중으로 틱한다 — SimTick의 (cityId, tickNumber) 유니크
+ * 충돌이 그 결과다. 조금씩 갚아 두면 syncCityClock이 설계대로 no-op이 된다.
+ *
+ * 앞서는 쪽: 락을 오래 기다리면 그 사이에도 advanceFrame이 누적분을 계속 늘리므로,
+ * 실제 흐른 시간보다 많이 쌓일 수 있다. 그대로 두면 게임 시계가 앞질러 가므로 깎아낸다.
+ *
+ * 반드시 «락을 잡은 뒤에» 부른다 — 락 밖에서 미리 맞추면 락 대기 시간만큼 다시 쌓여
+ * 이중으로 더해진다.
+ */
+export function syncEngineClockToWallTime(engine: EngineClock, now: number = Date.now()): void {
+  const driftMs = now - (engine.lastTickAtMs + engine.economyClockAccumMs)
+  engine.economyClockAccumMs = driftMs >= 0
+    ? engine.economyClockAccumMs + Math.min(driftMs, MAX_CLOCK_CATCHUP_MS)
+    : Math.max(0, engine.economyClockAccumMs + driftMs)
+}
+
+/**
  * ~SIM.LIVE_TICK_MS(3초) 주기로 realtime-server.ts가 호출한다. 누적된 경제 틱을
  * (보통 1개) 처리하고 곧바로 DB에 배치 flush한다 — 락은 이 전체를 한 번만 감싼다.
  */
 export async function runEconomicTickAndFlush(engine: LiveCityEngine): Promise<void> {
   if (engine.status !== 'ACTIVE' || engine.gameOver) return
-  if (engine.economyClockAccumMs < SIM.LIVE_TICK_MS) return
+  // 락을 괜히 잡지 않도록 싸게 먼저 거른다. 누적분이 아직 모자라도 벽시계 기준으로 밀려
+  // 있으면(위 syncEngineClockToWallTime의 적자) 들어가서 맞춰야 한다.
+  if (
+    engine.economyClockAccumMs < SIM.LIVE_TICK_MS
+    && Date.now() - engine.lastTickAtMs < SIM.LIVE_TICK_MS
+  ) return
 
   await runCitySimulationExclusive(engine.cityId, async () => {
+    await adoptCityClockIfAdvanced(engine)
+    syncEngineClockToWallTime(engine)
     let guard = 0
     while (
       engine.economyClockAccumMs >= SIM.LIVE_TICK_MS
