@@ -17,10 +17,17 @@ function wsUrl(): string {
   return `${scheme}://${window.location.host}/ws`
 }
 
+/** 운영자가 서버에서 직접 보낸 수동 공지 */
+export type RealtimeNotice = {
+  level: 'INFO' | 'WARNING'
+  message: string
+}
+
 type RealtimeHandlers = {
   onMotion: (snapshot: CityMotionSnapshot) => void
   onCity: (state: CityState) => void
   onError?: (message: string) => void
+  onNotice?: (notice: RealtimeNotice) => void
 }
 
 const RECONNECT_BASE_MS = 500
@@ -72,6 +79,7 @@ export function connectRealtime(
       const { type, payload, message } = msg as { type?: string; payload?: unknown; message?: string }
       if (type === 'motion' && payload) handlers.onMotion(payload as CityMotionSnapshot)
       else if (type === 'city' && payload) handlers.onCity(payload as CityState)
+      else if (type === 'notice' && payload) handlers.onNotice?.(payload as RealtimeNotice)
       else if (type === 'error' && message) handlers.onError?.(message)
     }
 

@@ -236,6 +236,9 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const [errorLeaving, setErrorLeaving] = useState(false)
   const [successToast, setSuccessToast] = useState<string | null>(null)
   const [successLeaving, setSuccessLeaving] = useState(false)
+  // 서버에서 직접 보낸 수동 공지 (크롬 알림과 함께 화면 안에도 띄운다)
+  const [noticeToast, setNoticeToast] = useState<string | null>(null)
+  const [noticeToastLeaving, setNoticeToastLeaving] = useState(false)
   const goalProgressCityRef = useRef<string | null>(null)
   const prevGoalsCompletedRef = useRef<number | null>(null)
   const [busy, setBusy] = useState(false)
@@ -376,6 +379,24 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       window.clearTimeout(clearTimer)
     }
   }, [successToast])
+
+  // 운영 공지는 읽을 시간을 줘야 하니 성공 토스트보다 오래 남긴다.
+  useEffect(() => {
+    if (!noticeToast) {
+      setNoticeToastLeaving(false)
+      return
+    }
+    setNoticeToastLeaving(false)
+    const fadeTimer = window.setTimeout(() => setNoticeToastLeaving(true), 12000)
+    const clearTimer = window.setTimeout(() => {
+      setNoticeToast(null)
+      setNoticeToastLeaving(false)
+    }, 12600)
+    return () => {
+      window.clearTimeout(fadeTimer)
+      window.clearTimeout(clearTimer)
+    }
+  }, [noticeToast])
 
   // ESC / A 운영관 / B 짓기 / C 지하철 / V 버스 / F 노선 / T 역관리 / G 운행 / H 대기 / Ctrl·Cmd+Z
   useEffect(() => {
@@ -551,6 +572,16 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
         setState(next)
         setError(null)
         setErrorStatus(null)
+      },
+      // 운영자가 서버에서 직접 보낸 공지 — 다른 탭에 가 있어도 보이게 크롬 알림을 띄우고,
+      // 알림 권한이 없거나 꺼둔 사람을 위해 화면 안 토스트도 같이 남긴다.
+      onNotice: notice => {
+        setNoticeToast(notice.message)
+        void notifyEmergency(
+          `${stateRef.current?.city.roomTitle ?? '관제실'} — 운영 공지`,
+          notice.message,
+          `nlt-notice-${cityId}`,
+        )
       },
       onMotion: next => {
         motionPollCountRef.current += 1
@@ -2551,6 +2582,26 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
           </div>
         ))}
       </div>
+
+      {noticeToast && (
+        <div
+          className={`${styles.warningToast}${noticeToastLeaving ? ` ${styles.warningToastLeaving}` : ''}`}
+          style={{ bottom: `${18 + 60 * ((error ? 1 : 0) + (successToast ? 1 : 0))}px` }}
+          role="alert"
+        >
+          <span>!</span>
+          {noticeToast}
+          <button
+            type="button"
+            className={styles.warningToastClose}
+            onClick={() => {
+              setNoticeToast(null)
+              setNoticeToastLeaving(false)
+            }}
+            aria-label="알림 닫기"
+          >×</button>
+        </div>
+      )}
 
       {successToast && (
         <div

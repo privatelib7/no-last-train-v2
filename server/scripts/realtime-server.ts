@@ -40,6 +40,7 @@ import {
   type LiveCityEngine,
 } from '../src/lib/live-city-engine'
 import { getRedisSubscriberClient } from '../src/lib/redis-client'
+import { parseCityNotice, REDIS_NOTICE_CHANNEL } from '../src/lib/city-notice'
 import { buildCityStateSnapshot } from '../src/lib/city-state'
 import { SIM } from '../src/types/game'
 
@@ -194,16 +195,45 @@ async function broadcastMotionPush() {
 }
 
 /**
+ * 운영자가 보낸 수동 공지를 그 도시에 접속해 있는 사람들에게 그대로 밀어준다.
+ * (`server/scripts/send-notice.ts` → Redis → 여기 → 브라우저 토스트)
+ */
+function broadcastNotice(raw: string) {
+  const notice = parseCityNotice(raw)
+  if (!notice) {
+    console.error('[realtime] 공지 형식이 잘못됐다', raw)
+    return
+  }
+  const sockets = citySubscribers.get(notice.cityId)
+  if (!sockets || sockets.size === 0) {
+    console.log(`[realtime] 공지 대상 ${notice.cityId}에 접속자가 없다 — 보내지 않는다`)
+    return
+  }
+  const message = JSON.stringify({ type: 'notice', payload: { level: notice.level, message: notice.message } })
+  let delivered = 0
+  for (const ws of sockets) {
+    if (ws.readyState !== WebSocket.OPEN) continue
+    ws.send(message)
+    delivered += 1
+  }
+  console.log(`[realtime] 공지 전송 ${notice.cityId} → ${delivered}명: ${notice.message}`)
+}
+
+/**
  * Redis pub/sub으로 다른 곳(이 프로세스의 sync 루프 포함)에서 갱신된 motion 베이스가
  * 도착하면, 다음 100ms 주기를 기다리지 않고 바로 렌더해서 밀어준다 — sync/구독 직후처럼
  * 상태가 막 바뀐 순간의 체감 지연을 줄인다. 구독자가 없는 도시는 무시해 메모리를 아낀다.
  */
 function subscribeMotionUpdates() {
   const sub = getRedisSubscriberClient()
-  sub.subscribe(REDIS_MOTION_UPDATE_CHANNEL).catch(err => {
+  sub.subscribe(REDIS_MOTION_UPDATE_CHANNEL, REDIS_NOTICE_CHANNEL).catch(err => {
     console.error('[realtime] redis subscribe failed (계속 폴링 기반으로 동작)', err.message)
   })
-  sub.on('message', (_channel, raw) => {
+  sub.on('message', (channel, raw) => {
+    if (channel === REDIS_NOTICE_CHANNEL) {
+      broadcastNotice(raw)
+      return
+    }
     let base: CityMotionBase
     try {
       base = JSON.parse(raw) as CityMotionBase
