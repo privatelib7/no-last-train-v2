@@ -1098,6 +1098,16 @@
   background: #fff;
 }
 
+/* ＋로 예약해 둔 방식 — 두 역을 클릭할 때까지 눌린 상태로 둔다.
+   막 누른 직후엔 커서가 버튼 위에 있으므로 :hover 규칙보다 세게 잡는다 */
+.newLineRow .newLineArmed,
+.newLineRow .newLineArmed:hover:not(:disabled) {
+  border-style: solid;
+  border-color: var(--gp-border-strong);
+  background: var(--gp-active-bg);
+  color: var(--gp-text-on-active-alt);
+}
+
 .lineTabs i {
   width: 8px;
   height: 8px;
@@ -2807,3 +2817,14 @@
   letter-spacing: -0.03em;
 }
 
+
+/* 열차 위 탑승 인원 */
+.onboardCount {
+  font-size: 1.8px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  paint-order: stroke fill;
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 0.42px;
+  pointer-events: none;
+}

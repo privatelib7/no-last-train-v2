@@ -57,9 +57,16 @@ test('노선 번호를 라벨로 쓴다', () => {
   assert.deepEqual(badges.map(badge => badge.label), ['3', '3'])
 })
 
-test('역이 하나뿐인 노선은 배지를 만들지 않는다', () => {
+test('역이 하나뿐인 노선도 배지를 하나 붙인다 — 그것만이 다시 이을 손잡이다', () => {
   const a = station('a', 40, 50)
-  assert.deepEqual(layoutLineEndBadges([line('l', '1호선', [a])], [a], 1), [])
+  const badges = layoutLineEndBadges([line('l', '1호선', [a])], [a], 1)
+  assert.equal(badges.length, 1)
+  assert.ok(badges[0].x < a.posX, '역 이름(위)·대기 승객 수(오른쪽)를 피해 왼쪽에 선다')
+  assert.ok(Math.abs(badges[0].y - a.posY) < 1e-6, '위아래로는 치우치지 않는다')
+})
+
+test('역이 없는 노선은 배지를 만들지 않는다', () => {
+  assert.deepEqual(layoutLineEndBadges([line('l', '1호선', [])], [], 1), [])
 })
 
 test('종점을 공유해도 배지가 노선에서 떨어져 나가지 않는다', () => {

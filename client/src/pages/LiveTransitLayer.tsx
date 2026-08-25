@@ -418,6 +418,30 @@ function LiveTransitLayer({
       {city.lines.flatMap(line => orderedVehicles(line)
         .filter(vehicle => vehicle.status === 'OPERATING' && !vehicle.isSpare)
         .map(vehicle => {
+          const onboard = motionVehicleById.get(vehicle.id)?.onboardCount
+          // 라이브 엔진이 없는 도시에서는 값 자체가 안 온다 — 그때는 아무것도 그리지 않는다.
+          if (onboard === undefined || onboard <= 0) return null
+          const motion = vehicleMotionById.get(vehicle.id)
+          if (!motion || motion.x === null || motion.y === null) return null
+          // 정차 중에는 역 대기 인원 숫자와 겹치므로 감춘다
+          if (motion.isDwelling) return null
+          // 차량 글리프(회전·축소)와 분리해 항상 수평·같은 크기로 띄운다
+          return (
+            <text
+              key={`onboard-${vehicle.id}`}
+              transform={`translate(${motion.x} ${motion.y - 3.2 * mapScale}) scale(${mapScale})`}
+              textAnchor="middle"
+              className={styles.onboardCount}
+              style={{ fill: onboard >= vehicle.capacity ? '#c0392b' : LINE_COLORS[line.color] }}
+            >
+              {onboard}
+            </text>
+          )
+        }))}
+
+      {city.lines.flatMap(line => orderedVehicles(line)
+        .filter(vehicle => vehicle.status === 'OPERATING' && !vehicle.isSpare)
+        .map(vehicle => {
           const flash = earningsFlashRef.current.get(vehicle.id)
           if (!flash) return null
           const elapsed = clockNowMs - flash.startedAt
