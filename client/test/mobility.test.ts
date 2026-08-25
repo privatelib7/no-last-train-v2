@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { getCityMap } from '../src/maps'
+import { getCityMap, pointInDistrict } from '../src/maps'
 import {
   CITIZEN_ERRAND_RANGE,
   CITIZEN_WALK_RANGE,
@@ -206,4 +206,39 @@ test('does not teleport citizens that are already walking when a station is buil
   // 새 역이 생겼다고 대부분의 시민이 리스폰되어서는 안 된다.
   assert.ok(carriedOver >= before.length * 0.8, `carried over ${carriedOver}/${before.length}`)
   assert.ok(after.every(journey => journey.targetStationId !== newStation.id || journey.generation > 0))
+})
+
+test('산·녹지에는 사람이 드물게 산다', () => {
+  // 가중치는 HOME_IN_ZONE_SHARE(60%)에만 걸리고 나머지는 육지 전역 균등이라,
+  // 녹지가 땅의 23%(서울)~38%(부산)를 차지하는 만큼 그대로 사람이 떨어지곤 했다.
+  // 실제로 서울 녹지 밀도가 주거지와 거의 같았다(0.87 대 0.96).
+  for (const key of ['SEOUL', 'BUSAN']) {
+    const map = getCityMap(key)
+    const homes: Array<{ x: number; y: number }> = []
+    for (let seed = 1; seed <= 30; seed++) {
+      for (const journey of createCitizenJourneys({
+        seed: seed * 13, waitingCount: 400, gameHour: 9, weekend: false,
+        stations: [], lines: [], map,
+      })) homes.push(journey.home)
+    }
+
+    const kindAt = (x: number, y: number) =>
+      map.districts.find(district => pointInDistrict(x, y, district))?.kind ?? null
+    const greenHomes = homes.filter(home => kindAt(home.x, home.y) === 'GREEN').length
+
+    // 녹지가 땅에서 차지하는 면적
+    let land = 0
+    let greenLand = 0
+    for (let y = 0.25; y < 100; y += 0.5) for (let x = 0.25; x < 100; x += 0.5) {
+      if (!map.isLand(x, y)) continue
+      land++
+      if (kindAt(x, y) === 'GREEN') greenLand++
+    }
+
+    const density = (greenHomes / homes.length) / (greenLand / land)
+    // 면적 대비 인구 밀도. 1이면 「산이 동네만큼 붐빈다」는 뜻이다.
+    assert.ok(density < 0.5, `${key} 녹지 인구밀도 ${density.toFixed(2)} — 산에 사람이 너무 많다`)
+    // 0이면 산자락 동네가 통째로 사라진 것이다 — 부산은 실제로 비탈에 동네가 있다.
+    assert.ok(density > 0.05, `${key} 녹지 인구밀도 ${density.toFixed(2)} — 산이 너무 비었다`)
+  }
 })

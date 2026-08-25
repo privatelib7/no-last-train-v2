@@ -70,8 +70,18 @@ const HOME_ZONE_WEIGHTS: Record<DistrictKind, number> = {
   TOURIST: 1.2,
   INDUSTRIAL: 0.8,
   HUB: 1.4,
-  GREEN: 0.25,
+  GREEN: 0.3,
 }
+
+/**
+ * 구역을 안 고르고 육지에 흩뿌릴 때 녹지·산지를 몇 번이나 피해 볼지.
+ * 이게 없으면 산에 사람이 동네만큼 산다 — 가중치는 HOME_IN_ZONE_SHARE(60%)에만
+ * 걸리고 나머지 40%는 «육지 전역 균등»이라, 녹지가 땅의 23%(서울)~38%(부산)를
+ * 차지하는 만큼 그대로 사람이 떨어지기 때문이다. 실제로 서울 녹지 밀도가
+ * 주거지와 거의 같았다(0.87 대 0.96).
+ * 0이 아니라 몇 번만 피하는 이유: 산자락 동네는 실제로 있다(부산이 특히).
+ */
+const AVOID_GREEN_TRIES = 2
 
 function randomUnit(seed: number, index: number, salt: number) {
   let value = Math.imul(seed + index * 374761393 + salt * 668265263, 1274126177)
@@ -214,6 +224,12 @@ function zoneHomePoint(map: CityMapDef, seed: number, index: number): Point | nu
   return null
 }
 
+function isGreenAt(map: CityMapDef, point: Point) {
+  return map.districts.some(
+    district => district.kind === 'GREEN' && pointInDistrict(point.x, point.y, district),
+  )
+}
+
 /**
  * 시민이 사는 자리 — 슬롯마다 고정이고 역이 있든 없든 맵 전역에 생긴다.
  * 노선을 깔지 않은 동네에도 사람이 살아 있게 하는 지점.
@@ -222,6 +238,11 @@ function citizenHome(map: CityMapDef, seed: number, index: number): Point {
   if (randomUnit(seed, index, 610) < HOME_IN_ZONE_SHARE) {
     const zoned = zoneHomePoint(map, seed, index)
     if (zoned) return zoned
+  }
+  // 구역을 안 고른 나머지도 산에는 잘 안 앉힌다 — 몇 번 다시 던져 보고, 그래도 산이면 받는다.
+  for (let attempt = 0; attempt < AVOID_GREEN_TRIES; attempt++) {
+    const point = deterministicLandPoint(map, seed, index, 500 + attempt * 200)
+    if (!isGreenAt(map, point)) return point
   }
   return deterministicLandPoint(map, seed, index, 500)
 }
