@@ -432,7 +432,7 @@ function LiveTransitLayer({
               transform={`translate(${motion.x} ${motion.y - 3.2 * mapScale}) scale(${mapScale})`}
               textAnchor="middle"
               className={styles.onboardCount}
-              style={{ fill: onboard >= vehicle.capacity ? '#c0392b' : LINE_COLORS[line.color] }}
+              style={{ fill: onboard >= vehicle.capacity ? '#c0392b' : resolveLineColor(line.color) }}
             >
               {onboard}
             </text>
