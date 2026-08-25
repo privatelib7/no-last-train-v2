@@ -15,6 +15,13 @@
   --gp-surface-tick: #f7f3ed;
   --gp-hud-bg: rgba(255, 255, 255, 0.92);
   --gp-map-bg: #dbe9ed;
+  /* 밤에 지도가 저물 때 섞어 넣는 색과 최대 진하기 — 손잡이는 여기 하나뿐이다.
+     실제 진하기는 --night(0 한낮 ~ 1 한밤)와 곱해지고, --night는 GamePage.tsx가
+     게임 시각에서 계산해 .mapCanvas에 인라인으로 준다(자식이 상속해 쓴다). */
+  --gp-map-night: #1b2b45;
+  --gp-map-night-max: 0.45;
+  /* 밤에 지형 위에 얹는 밝은 색 — 경계선·구 이름이 저문 배경에서 읽히게 한다 */
+  --gp-map-night-ink: #dce9fb;
   --gp-overlay: rgba(255, 255, 255, 0.9);
   --gp-overlay-strong: rgba(255, 255, 255, 0.92);
   --gp-overlay-soft: rgba(255, 255, 255, 0.86);
@@ -1886,6 +1893,9 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  /* 밤 처리는 .nightVeil 하나가 맡는다. 장막이 viewBox 밖 여백까지 덮으므로
+     여기서 배경을 또 어둡게 하면 여백만 두 번 저물어 가운데보다 어두워진다.
+     --night(0~1)는 GamePage.tsx가 게임 시각에서 계산해 인라인으로 주고, 자식이 상속한다. */
   background: var(--gp-map-bg);
 }
 
@@ -2040,28 +2050,31 @@
 
 .zone_residential {
   fill: #55a96a;
-  fill-opacity: 0.12;
+  /* 밤에는 장막이 색을 깎으므로 그만큼 진하게 — 주거/상업/공업이 밤에도 구분된다 */
+  fill-opacity: calc(0.12 + var(--night, 0) * 0.42);
   stroke: #55a96a;
   stroke-width: 0.2;
-  stroke-opacity: 0.25;
+  stroke-opacity: calc(0.25 + var(--night, 0) * 0.5);
   pointer-events: none;
 }
 
 .zone_commercial {
   fill: #3f8edb;
-  fill-opacity: 0.1;
+  /* 밤에는 장막이 색을 깎으므로 그만큼 진하게 — 주거/상업/공업이 밤에도 구분된다 */
+  fill-opacity: calc(0.1 + var(--night, 0) * 0.42);
   stroke: #3f8edb;
   stroke-width: 0.2;
-  stroke-opacity: 0.25;
+  stroke-opacity: calc(0.25 + var(--night, 0) * 0.5);
   pointer-events: none;
 }
 
 .zone_industrial {
   fill: #e1b735;
-  fill-opacity: 0.13;
+  /* 밤에는 장막이 색을 깎으므로 그만큼 진하게 — 주거/상업/공업이 밤에도 구분된다 */
+  fill-opacity: calc(0.13 + var(--night, 0) * 0.42);
   stroke: #e1b735;
   stroke-width: 0.2;
-  stroke-opacity: 0.25;
+  stroke-opacity: calc(0.25 + var(--night, 0) * 0.5);
   pointer-events: none;
 }
 
@@ -2092,7 +2105,9 @@
 }
 
 .districtLabels {
+  /* 장막 위에 있으므로 밤에는 밝은 쪽으로 옮겨야 저문 지형 위에서 읽힌다 */
   fill: var(--gp-district);
+  fill: color-mix(in srgb, var(--gp-district), var(--gp-map-night-ink) calc(var(--night, 0) * 100%));
   font-size: 1.7px;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -2827,4 +2842,24 @@
   stroke: rgba(255, 255, 255, 0.92);
   stroke-width: 0.42px;
   pointer-events: none;
+}
+
+/* 밤에만 보이는 지형 윤곽 — 장막 위에 덧그려 경계가 묻히지 않게 한다 */
+.nightOutlines {
+  fill: none;
+  stroke: var(--gp-map-night-ink);
+  stroke-width: 0.28;
+  stroke-linejoin: round;
+  opacity: calc(var(--night, 0) * 0.55);
+  pointer-events: none;
+  transition: opacity 700ms linear;
+}
+
+/* 게임 시각에 따라 저무는 지도 배경 — 진하기는 --night 와 --gp-map-night-max 가 정한다 */
+.nightVeil {
+  fill: var(--gp-map-night);
+  opacity: calc(var(--night, 0) * var(--gp-map-night-max));
+  pointer-events: none;
+  /* 밤 정도는 0.5초마다 샘플링되므로 그 사이를 CSS가 메워 계단이 안 보이게 한다 */
+  transition: opacity 700ms linear;
 }
