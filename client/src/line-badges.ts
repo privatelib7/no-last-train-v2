@@ -30,9 +30,19 @@ const RING_COUNT = 3
 
 /** 배지가 종점에서 벌어질 수 있는 최대 거리 (지도 단위) */
 export const BADGE_MAX_DISTANCE = BADGE_GAP + (RING_COUNT - 1) * RING_STEP
+/**
+ * 역이 하나뿐인 노선에서 배지를 내보낼 방향 — 방향을 잡아 줄 직전 역이 없으니 왼쪽으로 고정한다.
+ * 역 이름(위)과 대기 승객 수(오른쪽, LiveTransitLayer가 x=1.55 고정)를 모두 피한 자리다.
+ */
+const LONE_STATION_ANGLE = Math.PI
 
 function orderedStations(line: GameLine) {
   return line.lineStations.slice().sort((a, b) => a.order - b.order).map(item => item.station)
+}
+
+/** 직전 역 → 종점 방향(노선 바깥) */
+function outwardAngleFrom(prev: Station, terminus: Station) {
+  return Math.atan2(terminus.posY - prev.posY, terminus.posX - prev.posX)
 }
 
 type Point = { id?: string; x: number; y: number }
@@ -93,15 +103,19 @@ export function layoutLineEndBadges(
   const badges: LineEndBadge[] = []
   const stationPoints: Point[] = stations.map(station => ({ id: station.id, x: station.posX, y: station.posY }))
   for (const line of lines) {
-    if (line.lineStations.length < 2) continue
     const stops = orderedStations(line)
+    if (stops.length === 0) continue
     const label = line.name.match(/\d+/)?.[0] ?? line.name.slice(0, 1)
-    for (const [isHead, at, prev] of [
-      [true, stops[0], stops[1]] as const,
-      [false, stops[stops.length - 1], stops[stops.length - 2]] as const,
-    ]) {
-      // 직전 역 → 종점 방향 바깥이 기본 자리다. 역 표시를 가리지 않는다.
-      const outwardAngle = Math.atan2(at.posY - prev.posY, at.posX - prev.posX)
+    // [종점, 배지를 내보낼 방향]. 직전 역 → 종점 방향 바깥이 기본이라 역 표시를 가리지 않는다.
+    // 구간을 떼어내다 역이 하나만 남은 노선도 배지를 잡아끌어 다시 이을 수 있어야 하므로,
+    // 방향을 잡아 줄 직전 역이 없는 그 경우만 배지를 하나 붙이고 왼쪽에 세운다.
+    const ends: Array<readonly [boolean, Station, number]> = stops.length === 1
+      ? [[true, stops[0], LONE_STATION_ANGLE]]
+      : [
+          [true, stops[0], outwardAngleFrom(stops[1], stops[0])],
+          [false, stops[stops.length - 1], outwardAngleFrom(stops[stops.length - 2], stops[stops.length - 1])],
+        ]
+    for (const [isHead, at, outwardAngle] of ends) {
       const spot = pickBadgeSpot(at, outwardAngle, mapScale, badges, stationPoints)
       badges.push({ id: `${line.id}-${isHead ? 'head' : 'tail'}`, line, label, station: at, isHead, ...spot })
     }
