@@ -197,8 +197,9 @@ export function gameHourOfTick(tick: number): number {
 }
 
 // 혼잡도(waiting/capacity) 표시 기준 — 연웅: 행복도 하락 판정도 서버에서 같은 기준 사용 권장
-export const CONGESTION_WARN = 0.7
-export const CONGESTION_SATURATED = 1.0
+// 혼잡 임계값은 congestion.ts가 정본이다 — 이 파일은 최상단에서 import.meta.env를 읽어
+// Vite 밖에서 못 불러오는데, 임계값은 테스트에서 써야 해서 옮겼다. 재수출은 호환용.
+export { CONGESTION_WARN, CONGESTION_SATURATED } from '../congestion'
 
 const API_BASE = import.meta.env.VITE_API_URL ?? ''
 

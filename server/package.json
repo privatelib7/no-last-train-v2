@@ -4,17 +4,20 @@
   "private": true,
   "scripts": {
     "dev": "npm run db:prepare && node scripts/next-with-env.mjs dev",
+    "realtime": "tsx --env-file-if-exists=.env scripts/realtime-server.ts",
     "build": "next build",
     "build:next": "next build",
     "test": "tsx --test src/lib/*.test.ts",
     "start": "node scripts/next-with-env.mjs start",
-    "db:prepare": "prisma generate && prisma db push && tsx prisma/seed.ts",
+    "db:prepare": "prisma generate && npm run db:fixups && prisma db push && tsx prisma/seed.ts",
+    "db:fixups": "node --env-file-if-exists=.env scripts/pre-push-fixups.mjs",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
-    "data:demand": "node scripts/build-demand-profile.mjs"
+    "data:demand": "node scripts/build-demand-profile.mjs",
+    "data:map": "node scripts/build-map-profile.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

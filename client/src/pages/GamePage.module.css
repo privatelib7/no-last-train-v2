@@ -114,7 +114,6 @@
   --gp-land-alt: #eeeae1;
   --gp-land-stroke: #b9c3bd;
   --gp-river: #b7d7e1;
-  --gp-river-soft: rgba(108, 161, 190, 0.18);
   --gp-mountains: #d8dfd1;
   --gp-district: #a1a49b;
   --gp-person: #3f5360;
@@ -1070,6 +1069,34 @@
   animation: saturatedPulse 1s ease-in-out infinite;
 }
 
+.congestedSegment {
+  /* 굵기·진하기·색은 GamePage.tsx가 혼잡도에 따라 인라인으로 준다 */
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+.congestedSegmentSaturated {
+  /* 박동은 하되 역 링의 saturatedPulse(0.95까지 올라간다)를 쓰면 안 된다.
+     그건 굵기 0.55짜리 «얇은 링»에 맞춘 값이라, 노선을 감싸는 넓은 띠에 그대로 쓰면
+     빨강이 거의 불투명해져 지도를 잡아먹는다. 게다가 애니메이션은 인라인 opacity를
+     덮어써서 혼잡도에 따라 준 진하기가 통째로 무시된다.
+     최고점을 인라인 곡선의 꼭대기(0.60)에 맞춰 이어지게 한다. */
+  animation: congestedPulse 1s ease-in-out infinite;
+}
+
+@keyframes congestedPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 0.32; }
+}
+
+.congestedMark {
+  display: inline-block;
+  width: 14px;
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #e8a13c, #d64541);
+}
+
 @keyframes saturatedPulse {
   0%, 100% { opacity: 0.95; }
   50% { opacity: 0.3; }
@@ -2019,15 +2046,10 @@
   fill: var(--gp-sea);
 }
 
-.busanLand,
-.yeongdo {
+.land {
   fill: var(--gp-land);
   stroke: var(--gp-land-stroke);
   stroke-width: 0.45;
-}
-
-.yeongdo {
-  fill: var(--gp-land-alt);
 }
 
 .waitingCount {
@@ -2048,59 +2070,60 @@
   fill: #c23b2a;
 }
 
-.zone_residential {
-  fill: #55a96a;
-  /* 밤에는 장막이 색을 깎으므로 그만큼 진하게 — 주거/상업/공업이 밤에도 구분된다 */
-  fill-opacity: calc(0.12 + var(--night, 0) * 0.42);
-  stroke: #55a96a;
-  stroke-width: 0.2;
-  stroke-opacity: calc(0.25 + var(--night, 0) * 0.5);
+.district {
+  fill: var(--d);
+  /* 밤에는 장막이 색을 깎으므로 그만큼 진하게 — 여섯 종류가 밤에도 구분된다 */
+  fill-opacity: calc(var(--d-alpha) + var(--night, 0) * 0.42);
+  stroke: var(--d);
+  /* 구역끼리 경계를 공유한다 → 안쪽 경계는 이웃이 한 번씩 그려 두 배로 진해진다.
+     의도한 것이다(경계가 또렷해진다). 그래서 예전 zone(0.2)의 절반만 쓴다 */
+  stroke-width: 0.12;
+  stroke-opacity: calc(0.3 + var(--night, 0) * 0.5);
+  /* 다른 지형과 달리 여기만 마우스를 받는다 — <title>로 구역 이름을 띄우기 위해서다.
+     지도 클릭(역 짓기·옮기기)은 handleMapClick이 event.target이 아니라 clientX/Y와
+     SVG 행렬만 보고, 이벤트는 <svg>까지 그대로 올라가므로 영향이 없다.
+     노선·역은 구역보다 위에 그려지므로 그쪽 클릭도 먼저 잡힌다. */
+}
+
+/* 노선 5색(#E9783C 19° · #E1B735 45° · #55A96A 133° · #3F8EDB 209° · #8E6CC1 267°)과
+   헷갈리면 안 된다. 색상환의 빈 구간에 놓고 채도·명도까지 벌렸다.
+   예전 .zone_* 는 노선의 초록·파랑·노랑을 «그대로» 재사용하고 있었다. */
+.district_RESIDENTIAL { --d: #a79c8c; --d-alpha: 0.16; }  /* 웜그레이 — 면적이 가장 넓어 일부러 무채색에 가깝게 */
+.district_COMMERCIAL  { --d: #1f8a8a; --d-alpha: 0.11; }  /* 틸 171° — 노선 파랑과 초록 사이 최대 간격 */
+.district_TOURIST     { --d: #b4478f; --d-alpha: 0.10; }  /* 마젠타 322° — 보라와 주황 사이 */
+.district_INDUSTRIAL  { --d: #8a6234; --d-alpha: 0.12; }  /* 엄버 — 색상은 주황 계열이나 채도·명도가 멀어 갈색으로 읽힌다 */
+.district_HUB         { --d: #55627d; --d-alpha: 0.12; }  /* 슬레이트 — 채도를 죽여 노선 파랑과 갈라놓는다 */
+.district_GREEN       { --d: #7e9455; --d-alpha: 0.14; }  /* 모스 82° — 노선 초록보다 일부러 탁하게 */
+
+.relief {
+  /* 고도대는 낮은 밴드부터 겹쳐 그린다 → 높은 곳이 저절로 진해진다.
+     장막 아래라 밤에는 깎이므로 그만큼 올린다 — .district와 같은 방식이다 */
+  fill: var(--gp-mountains);
+  opacity: calc(0.5 + var(--night, 0) * 0.25);
   pointer-events: none;
 }
 
-.zone_commercial {
-  fill: #3f8edb;
-  /* 밤에는 장막이 색을 깎으므로 그만큼 진하게 — 주거/상업/공업이 밤에도 구분된다 */
-  fill-opacity: calc(0.1 + var(--night, 0) * 0.42);
-  stroke: #3f8edb;
-  stroke-width: 0.2;
-  stroke-opacity: calc(0.25 + var(--night, 0) * 0.5);
+.contours {
+  /* 지형 위에 얹는 «주석»이라 굵기는 화면 기준이다(GamePage가 mapScale을 곱한다).
+     지형 기준으로 두면 확대할수록 얇아져, 지형을 보려고 확대한 순간 사라진다 */
+  fill: none;
+  stroke: var(--gp-land-stroke);
+  stroke-opacity: calc(0.45 + var(--night, 0) * 0.35);
+  stroke-linejoin: round;
+  stroke-linecap: round;
   pointer-events: none;
 }
 
-.zone_industrial {
-  fill: #e1b735;
-  /* 밤에는 장막이 색을 깎으므로 그만큼 진하게 — 주거/상업/공업이 밤에도 구분된다 */
-  fill-opacity: calc(0.13 + var(--night, 0) * 0.42);
-  stroke: #e1b735;
-  stroke-width: 0.2;
-  stroke-opacity: calc(0.25 + var(--night, 0) * 0.5);
-  pointer-events: none;
-}
 
 .mapGrid {
   fill: url(#map-grid);
   pointer-events: none;
 }
 
-.nakdongRiver,
-.suyeongRiver {
-  fill: none;
-  stroke: var(--gp-river);
-  stroke-width: 3.8;
-  stroke-linecap: round;
+.water {
+  fill: var(--gp-river);
+  stroke: none;
   opacity: 0.9;
-  pointer-events: none;
-}
-
-.suyeongRiver {
-  stroke-width: 1.8;
-  opacity: 0.72;
-}
-
-.mountains {
-  fill: var(--gp-mountains);
-  opacity: 0.58;
   pointer-events: none;
 }
 
@@ -2149,13 +2172,6 @@
 @keyframes citizenWaitPulse {
   from { opacity: 0.56; }
   to { opacity: 1; }
-}
-
-.river {
-  fill: none;
-  stroke: var(--gp-river-soft);
-  stroke-width: 7;
-  stroke-linecap: round;
 }
 
 .lineShadow,
@@ -2249,13 +2265,6 @@
 
 @keyframes selectionSpin {
   to { stroke-dashoffset: -8; }
-}
-
-.stationIcon {
-  font-size: 2.05px;
-  font-weight: 900;
-  fill: var(--gp-station-stroke);
-  pointer-events: none;
 }
 
 .stationLabelLayer {
@@ -2564,28 +2573,13 @@
   gap: 4px;
 }
 
-.zoneMarkResidential,
-.zoneMarkCommercial,
-.zoneMarkIndustrial {
+.districtMark {
   display: inline-block;
   width: 10px;
   height: 10px;
   border-radius: 3px;
-}
-
-.zoneMarkResidential {
-  background: rgba(85, 169, 106, 0.45);
-  border: 1px solid #55a96a;
-}
-
-.zoneMarkCommercial {
-  background: rgba(63, 142, 219, 0.4);
-  border: 1px solid #3f8edb;
-}
-
-.zoneMarkIndustrial {
-  background: rgba(225, 183, 53, 0.45);
-  border: 1px solid #c9a22e;
+  background: color-mix(in srgb, var(--d) 42%, transparent);
+  border: 1px solid var(--d);
 }
 
 .regularStationMark,
@@ -2832,6 +2826,26 @@
   letter-spacing: -0.03em;
 }
 
+
+/* 게임 시각에 따라 저무는 지도 배경 — 진하기는 GamePage.tsx가 인라인으로 준다 */
+/* 밤에만 보이는 지형 윤곽 — 장막 위에 덧그려 경계가 묻히지 않게 한다 */
+.nightOutlines {
+  fill: none;
+  stroke: var(--gp-map-night-ink);
+  stroke-width: 0.28;
+  stroke-linejoin: round;
+  opacity: calc(var(--night, 0) * 0.55);
+  pointer-events: none;
+  transition: opacity 700ms linear;
+}
+
+.nightVeil {
+  fill: var(--gp-map-night);
+  opacity: calc(var(--night, 0) * var(--gp-map-night-max));
+  pointer-events: none;
+  /* 밤 정도는 0.5초마다 샘플링되므로 그 사이를 CSS가 메워 계단이 안 보이게 한다 */
+  transition: opacity 700ms linear;
+}
 
 /* 열차 위 탑승 인원 */
 .onboardCount {

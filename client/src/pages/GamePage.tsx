@@ -24,10 +24,11 @@ import { newlyJoinedPlayers, notifyEmergency } from '../lib/notifications'
 import { playGoalUnlockSfx } from '../lib/sfx'
 import InviteModal from './InviteModal'
 import CitySettingsModal from './CitySettingsModal'
-import { getCityMap, polyPath, type CityMapDef } from '../maps'
+import { getCityMap, type CityMapDef, type DistrictKind } from '../maps'
+import { congestedSegments, congestionHeat } from '../congestion'
+import { nightFactor } from '../day-night'
 import { resolveLineColor } from '../lib/line-color'
 import { layoutLineEndBadges, type LineEndBadge } from '../line-badges'
-import { nightFactor } from '../day-night'
 import LiveTransitLayer, { type HudSample, type MotionDrive } from './LiveTransitLayer'
 import LineColorPickerModal from './LineColorPickerModal'
 import styles from './GamePage.module.css'
@@ -99,6 +100,12 @@ const PRESENCE_COLORS = ['#ff6f91', '#4fc9a8', '#5b8cf2', '#ffb648', '#a77dfb', 
 // 서버 actions 라우트의 MAX_VEHICLES_PER_LINE 과 같아야 한다
 const MAX_VEHICLES_PER_LINE = 8
 // 전철·버스 글리프 축소 배율 — 역/선로에 비해 차량이 너무 커 보이지 않게 한다
+// 범례 순서 = 지도에서 넓은 것부터. 색은 GamePage.module.css의 .district_* 에 있다.
+const DISTRICT_LEGEND: Array<[DistrictKind, string]> = [
+  ['RESIDENTIAL', '주거'], ['COMMERCIAL', '상업'], ['TOURIST', '관광'],
+  ['INDUSTRIAL', '산업·업무'], ['HUB', '거점'], ['GREEN', '녹지·산'],
+]
+
 const INITIAL_MAP_VIEW: MapView = { x: 0, y: 0, width: 100, height: 100 }
 
 // 밤 장막을 보이는 영역 밖으로 얼마나 더 키울지 (viewBox 배수). SVG가 뷰포트 밖을 잘라주므로
@@ -1418,6 +1425,71 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     }
   }, [draggedSegmentKey])
 
+  const mapScale = mapView.width / 100
+
+  // ⚠ 훅이므로 아래 조기 반환(!state / !motionSettled)보다 «위»에 있어야 한다.
+  // 지형은 mapDef·mapScale이 바뀔 때만 다시 만든다. GamePage는 500ms마다, 그리고 팬 중에는
+  // pointermove마다 통째로 리렌더되는데, 팬은 <svg>의 viewBox 속성만 건드리므로 이 안은
+  // 그대로 재사용된다. getCityMap이 «같은 객체»를 돌려주는 것이 이 memo의 전제다.
+  const terrain = useMemo(() => (
+    <>
+      <defs>
+        <pattern id="map-grid" width="5" height="5" patternUnits="userSpaceOnUse">
+          <path d="M 5 0 L 0 0 0 5" fill="none" stroke="rgba(26,22,19,.035)" strokeWidth=".18" />
+        </pattern>
+        {/* 섬·내수면이 같은 경로의 서브패스라 evenodd가 필요하다 */}
+        <clipPath id="city-land-clip" clipRule="evenodd">
+          <path d={mapDef.coastline} clipRule="evenodd" />
+        </clipPath>
+      </defs>
+      <rect width="100" height="100" className={styles.sea} />
+      <path className={styles.land} d={mapDef.coastline} fillRule="evenodd" />
+      <g clipPath="url(#city-land-clip)">
+        {/* 고도대는 «구역 아래». 위에 얹으면 넓은 100m 밴드가 반투명 구역 여섯 색을 뭉갠다 */}
+        <g className={styles.relief} aria-hidden="true">
+          {mapDef.reliefBands.map(band => <path key={band.minM} d={band.d} fillRule="evenodd" />)}
+        </g>
+        <g aria-label="도시 구역">
+          {mapDef.districts.map(district => (
+            <path
+              key={district.name}
+              className={`${styles.district} ${styles[`district_${district.kind}`]}`}
+              d={district.d}
+            >
+              {/* 이름은 마우스를 올렸을 때만 뜬다. 구역이 서른 개가 넘어 지도에 다 적으면
+                  글자끼리 겹치고, 그렇다고 색만 두면 범례를 매번 찾아봐야 한다.
+                  이 저장소가 이미 쓰는 방식(제목 바꾸기·설정 버튼의 title)과 같다. */}
+              <title>{district.name}</title>
+            </path>
+          ))}
+        </g>
+        {/* 등고선은 «구역 위». 머리카락 굵기라 반투명 채움 아래 깔면 뭉개진다.
+            굵기는 화면 기준 — 이 지도의 잉크(노선·역 이름·배지)가 전부 그렇다 */}
+        <g className={styles.contours} style={{ strokeWidth: 0.09 * mapScale }} aria-hidden="true">
+          {mapDef.contours.map(contour => <path key={contour.elevM} d={contour.d} />)}
+        </g>
+      </g>
+      <path className={styles.mapGrid} d="M0 0H100V100H0Z" />
+      <g className={styles.water} aria-hidden="true">
+        {mapDef.water.map((d, index) => <path key={index} d={d} fillRule="evenodd" />)}
+      </g>
+    </>
+  ), [mapDef, mapScale])
+
+  // 장막 «위»에 얹는 것들. 밤에 묻히면 안 되는 윤곽과 구 이름이다.
+  const terrainInk = useMemo(() => (
+    <>
+      <g className={styles.nightOutlines} aria-hidden="true">
+        <path d={mapDef.coastline} />
+      </g>
+      <g className={styles.districtLabels}>
+        {mapDef.guLabels.map(gu => (
+          <text key={gu.name} transform={`translate(${gu.at[0]} ${gu.at[1]}) scale(${mapScale})`}>{gu.name}</text>
+        ))}
+      </g>
+    </>
+  ), [mapDef, mapScale])
+
   if (!state) {
     if (errorStatus === 401) {
       return (
@@ -1512,7 +1584,6 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   // HUD 시계/대기인원은 LiveTransitLayer가 500ms마다 샘플링해 올려준다.
   const continuousTick = hudSample.continuousTick > 0 ? hudSample.continuousTick : currentTick
   const currentGameDay = Math.floor(continuousTick / TICKS_PER_DAY) + 1
-  const mapScale = mapView.width / 100
   // 노선 끝 호선 번호 배지. 겹칠 때 종점 둘레로 돌려 피하므로 노선에서 떨어지지 않는다.
   const lineEndBadges: LineEndBadge[] = layoutLineEndBadges(sortedLines, state.city.stations, mapScale)
   const selectedStation = stationById.get(selectedStationId) ?? null
@@ -2152,40 +2223,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
             onPointerCancel={endMapPan}
             onWheel={handleMapWheel}
           >
-            <defs>
-              <pattern id="map-grid" width="5" height="5" patternUnits="userSpaceOnUse">
-                <path d="M 5 0 L 0 0 0 5" fill="none" stroke="rgba(26,22,19,.035)" strokeWidth=".18" />
-              </pattern>
-              <clipPath id="city-land-clip">
-                <path d={mapDef.landPath} />
-                {mapDef.islandPaths.map((path, index) => <path key={index} d={path} />)}
-              </clipPath>
-            </defs>
-            <rect width="100" height="100" className={styles.sea} />
-            <path
-              className={styles.busanLand}
-              d={mapDef.landPath}
-            />
-            {mapDef.islandPaths.map((path, index) => (
-              <path key={`island-${index}`} className={styles.yeongdo} d={path} />
-            ))}
-            <g clipPath="url(#city-land-clip)" aria-label="도시 구역">
-              {mapDef.zones.map((zone, index) => (
-                <path key={`zone-${index}`} className={styles[`zone_${zone.kind}`]} d={polyPath(zone.points)} />
-              ))}
-            </g>
-            <path className={styles.mapGrid} d="M0 0H100V100H0Z" />
-            {mapDef.rivers.map((river, index) => (
-              <path
-                key={`river-${index}`}
-                className={styles.nakdongRiver}
-                d={river.d}
-                style={{ strokeWidth: river.width, opacity: river.opacity }}
-              />
-            ))}
-            <g className={styles.mountains}>
-              {mapDef.mountainPaths.map((path, index) => <path key={index} d={path} />)}
-            </g>
+            {terrain}
 
             {/* 지형 위·노선 아래에 깔아 배경만 저물게 한다 — 노선·역·열차는 밤에도 또렷하게 남는다.
                 SVG는 viewBox 밖 내용도 뷰포트 안이면 그리므로(preserveAspectRatio meet),
@@ -2199,22 +2237,10 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
             />
 
             {/* 장막이 지형을 고르게 덮으면 경계선·글자처럼 얇고 옅은 것부터 묻힌다.
-                밤에만 지형 윤곽을 장막 위에 한 번 더 그려 형태를 되살린다.
-                구역은 여기 넣지 않는다 — 회색 선을 덧그리면 주거/상업/공업 색이 죽는다.
-                대신 .zone_* 가 밤에 자기 색을 진하게 낸다 */}
-            <g className={styles.nightOutlines} aria-hidden="true">
-              <path d={mapDef.landPath} />
-              {mapDef.islandPaths.map((path, index) => (
-                <path key={`night-island-${index}`} d={path} />
-              ))}
-            </g>
-
-            {/* 구 이름도 장막 위에 둬야 밤에 읽힌다 */}
-            <g className={styles.districtLabels}>
-              {mapDef.districts.map(district => (
-                <text key={district.label} x={district.x} y={district.y}>{district.label}</text>
-              ))}
-            </g>
+                밤에만 해안선을 장막 위에 한 번 더 그려 형태를 되살리고, 구 이름도 위로 올린다.
+                구역 경계와 등고선은 여기 넣지 않는다 — 서른 개 넘는 경계를 회색으로 덧그리면
+                밤이 통째로 와이어프레임이 되고 구역 색도 죽는다. 대신 .district가 밤에 진해진다 */}
+            {terrainInk}
 
             {sortedLines.filter(line => line.lineStations.length > 1).map(line => (
               <g
@@ -2241,6 +2267,34 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                     style={{ strokeWidth: 1.85 * mapScale }}
                   />
                 )}
+                {/* 혼잡 구간 — 노선 «아래»에 깔아 후광처럼 번지게 한다. 위에 덮으면 노선
+                    고유색이 가려져 어느 노선인지 알 수 없게 된다. 붐빌수록 굵고 진해지고,
+                    색은 주의(주황)에서 포화(빨강)로 넘어간다. 역의 혼잡 링과 같은 두 색이다 */}
+                {congestedSegments(orderedStations(line), congestionByStation).map(segment => {
+                  const { t, color } = congestionHeat(segment.congestion)
+                  return (
+                    <line
+                      key={`heat-${segment.key}`}
+                      className={`${styles.congestedSegment} ${segment.congestion >= CONGESTION_SATURATED ? styles.congestedSegmentSaturated : ''}`}
+                      x1={segment.from.posX} y1={segment.from.posY}
+                      x2={segment.to.posX} y2={segment.to.posY}
+                      style={{
+                        stroke: color,
+                        // 노선보다 확실히 굵어야 후광으로 읽히지만, 너무 굵으면
+                        // 노선 고유색을 삼킨다(특히 빨강 계열 1호선).
+                        strokeWidth: (1.7 + t * 1.2) * mapScale,
+                        // 꼭대기 0.60 — 포화 구간의 congestedPulse 최고점과 같아서
+                        // 주의에서 포화로 넘어갈 때 진하기가 튀지 않는다
+                        opacity: 0.26 + t * 0.34,
+                      }}
+                    >
+                      <title>
+                        {segment.from.name}–{segment.to.name} · 혼잡 {Math.round(segment.congestion * 100)}%
+                        {segment.congestion >= CONGESTION_SATURATED ? ' (포화)' : ''}
+                      </title>
+                    </line>
+                  )
+                })}
                 <polyline
                   points={linePoints(line)}
                   className={`${styles.linePath} ${line.mode === 'BUS' ? styles.busPath : ''} ${line.id === selectedLineId ? styles.selectedLinePath : ''}`}
@@ -2393,7 +2447,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                 <text
                   key={`label-${station.id}`}
                   transform={`translate(${station.posX} ${station.posY}) scale(${mapScale})`}
-                  y={station.name === '서면역' ? 4.4 : -2.7}
+                  y={-2.7}
                   textAnchor="middle"
                   className={styles.stationLabel}
                 >{station.name}</text>
@@ -2427,12 +2481,15 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                   <span><i className={styles.interchangeStationMark} />환승</span>
                   <span><i className={styles.busStopMark} />버스 정류장</span>
                   <span><i className={styles.saturatedMark} />포화</span>
+                  <span><i className={styles.congestedMark} />혼잡 구간</span>
                 </div>
                 <div className={styles.legendRow} aria-label="구역 종류">
                   <b>구역</b>
-                  <span><i className={styles.zoneMarkResidential} />주거</span>
-                  <span><i className={styles.zoneMarkCommercial} />상업</span>
-                  <span><i className={styles.zoneMarkIndustrial} />산업·오피스</span>
+                  {DISTRICT_LEGEND.map(([kind, label]) => (
+                    <span key={kind}>
+                      <i className={`${styles.districtMark} ${styles[`district_${kind}`]}`} />{label}
+                    </span>
+                  ))}
                 </div>
               </div>
             )}

@@ -1,6 +1,6 @@
 import type { GameLine, Station, StationType } from './api/game'
-import type { CityMapDef, ZoneKind } from './maps'
-import { pointInPolygon } from './maps'
+import type { CityMapDef, DistrictKind } from './maps'
+import { pointInDistrict } from './maps'
 import { stationDemandWeights } from './demand-profile'
 
 export type CitizenTravelMode = 'WALK' | 'WAIT' | 'BOARDING'
@@ -56,12 +56,21 @@ export const CITIZEN_WALK_RANGE = 12
 /** 역이 없어도 사람은 산다 — 동네 볼일로 오가는 반경. */
 export const CITIZEN_ERRAND_RANGE = 7
 
-/** 집을 용도지역에 얼마나 몰아줄지. 나머지는 육지 전역에 고르게 흩어진다. */
+/** 집을 구역에 얼마나 몰아줄지. 나머지는 육지 전역에 고르게 흩어진다. */
 const HOME_IN_ZONE_SHARE = 0.6
-const HOME_ZONE_WEIGHTS: Record<ZoneKind, number> = {
-  residential: 3.2,
-  commercial: 1.6,
-  industrial: 0.8,
+/**
+ * 구역 유형별로 사람이 얼마나 사는가. 예전에는 손으로 그린 3종(주거·상업·산업)이었지만
+ * 지금은 실측 승하차로 분류된 6종이다(maps.ts).
+ * 거점·상업은 «낮에 사람이 모이는 곳»이라 사는 사람은 상대적으로 적고, 녹지·산지는
+ * 거의 없다 — 대신 0이 아닌 이유는 산자락 동네가 실제로 있기 때문이다(부산이 특히).
+ */
+const HOME_ZONE_WEIGHTS: Record<DistrictKind, number> = {
+  RESIDENTIAL: 3.2,
+  COMMERCIAL: 1.6,
+  TOURIST: 1.2,
+  INDUSTRIAL: 0.8,
+  HUB: 1.4,
+  GREEN: 0.25,
 }
 
 function randomUnit(seed: number, index: number, salt: number) {
@@ -161,50 +170,44 @@ function deterministicLandPoint(map: CityMapDef, seed: number, index: number, sa
     if (map.isLand(point.x, point.y)) return point
   }
 
-  const anchor = { x: map.anchor[0], y: map.anchor[1] }
-  if (map.isLand(anchor.x, anchor.y)) return anchor
-
+  // anchor(손으로 찍어 둔 «반드시 땅인 좌표») 폴백은 없앴다. isLand가 비트마스크 조회라
+  // 이 격자 훑기가 2401번 시프트·마스크면 끝나고, 어떤 실제 도시에서도 실패하지 않는다.
+  // 지오메트리를 다시 구울 때마다 손으로 맞춰 줘야 하는 상수를 남길 이유가 없다.
   for (let y = 2; y <= 98; y += 2) {
     for (let x = 2; x <= 98; x += 2) {
       if (map.isLand(x, y)) return { x, y }
     }
   }
 
-  return anchor
+  return { x: 50, y: 50 }
 }
 
-/** 주거지에 사람이 몰리고 상업·산업지에도 얼마간 산다 — 도시가 잡음이 아니라 동네처럼 보이도록. */
+/**
+ * 주거지에 사람이 몰리고 상업·거점에도 얼마간 산다 — 도시가 잡음이 아니라 동네처럼 보이도록.
+ * 구역은 이제 실측에서 구운 것이라(maps.ts) 사람이 진짜 주거지구에 살게 된다.
+ * 면적으로 가중하지 않는 이유: 넓기만 한 외곽 구역이 도심 동네를 압도하면 안 된다.
+ */
 function zoneHomePoint(map: CityMapDef, seed: number, index: number): Point | null {
-  if (map.zones.length === 0) return null
+  if (map.districts.length === 0) return null
 
-  const total = map.zones.reduce((sum, zone) => sum + HOME_ZONE_WEIGHTS[zone.kind], 0)
+  const total = map.districts.reduce((sum, district) => sum + HOME_ZONE_WEIGHTS[district.kind], 0)
   let cursor = randomUnit(seed, index, 611) * total
-  let picked = map.zones[map.zones.length - 1]
-  for (const zone of map.zones) {
-    cursor -= HOME_ZONE_WEIGHTS[zone.kind]
+  let picked = map.districts[map.districts.length - 1]
+  for (const district of map.districts) {
+    cursor -= HOME_ZONE_WEIGHTS[district.kind]
     if (cursor <= 0) {
-      picked = zone
+      picked = district
       break
     }
   }
 
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  for (const [x, y] of picked.points) {
-    minX = Math.min(minX, x)
-    minY = Math.min(minY, y)
-    maxX = Math.max(maxX, x)
-    maxY = Math.max(maxY, y)
-  }
-
+  const [minX, minY, maxX, maxY] = picked.bbox
   for (let attempt = 0; attempt < 24; attempt++) {
     const point = {
       x: minX + randomUnit(seed, index, 620 + attempt * 2) * (maxX - minX),
       y: minY + randomUnit(seed, index, 621 + attempt * 2) * (maxY - minY),
     }
-    if (!pointInPolygon(point.x, point.y, picked.points)) continue
+    if (!pointInDistrict(point.x, point.y, picked)) continue
     if (!map.isLand(point.x, point.y)) continue
     return point
   }
