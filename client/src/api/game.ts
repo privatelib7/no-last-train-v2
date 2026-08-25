@@ -1,5 +1,6 @@
 export type StationType = 'RESIDENTIAL' | 'COMMERCIAL' | 'TOURIST' | 'INDUSTRIAL' | 'HUB'
-export type LineColor = 'RED' | 'BLUE' | 'GREEN' | 'YELLOW' | 'PURPLE'
+/** 색상 코드(#RRGGBB). 예전 데이터에는 RED/BLUE 같은 레거시 이름이 남아있을 수 있다. */
+export type LineColor = string
 
 export type Station = {
   id: string
@@ -325,6 +326,7 @@ export type CityAction =
   | { type: 'INSERT_STATION'; lineId: string; fromStationId: string; toStationId: string; stationId: string }
   | { type: 'BUILD_SEGMENT'; lineId: string; fromStationId: string; toStationId: string }
   | { type: 'SET_LINE_STATUS'; lineId: string; status: 'OPERATING' | 'SUSPENDED' }
+  | { type: 'SET_LINE_COLOR'; lineId: string; color: string }
   | { type: 'BUY_VEHICLE'; lineId: string; count: number }
   | { type: 'SET_VEHICLE_SERVICE'; lineId: string; vehicleId: string; inService: boolean }
   | { type: 'SET_VEHICLE_EXPRESS'; lineId: string; vehicleId: string; express: boolean }

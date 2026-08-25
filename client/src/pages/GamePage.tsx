@@ -25,8 +25,10 @@ import { playGoalUnlockSfx } from '../lib/sfx'
 import InviteModal from './InviteModal'
 import CitySettingsModal from './CitySettingsModal'
 import { getCityMap, polyPath, type CityMapDef } from '../maps'
+import { resolveLineColor } from '../lib/line-color'
 import { layoutLineEndBadges, type LineEndBadge } from '../line-badges'
 import LiveTransitLayer, { type HudSample, type MotionDrive } from './LiveTransitLayer'
+import LineColorPickerModal from './LineColorPickerModal'
 import styles from './GamePage.module.css'
 
 interface Props {
@@ -97,14 +99,6 @@ const PRESENCE_COLORS = ['#ff6f91', '#4fc9a8', '#5b8cf2', '#ffb648', '#a77dfb', 
 const MAX_VEHICLES_PER_LINE = 8
 // 전철·버스 글리프 축소 배율 — 역/선로에 비해 차량이 너무 커 보이지 않게 한다
 const INITIAL_MAP_VIEW: MapView = { x: 0, y: 0, width: 100, height: 100 }
-
-const LINE_COLORS: Record<string, string> = {
-  RED: '#E9783C',
-  BLUE: '#3F8EDB',
-  GREEN: '#55A96A',
-  YELLOW: '#E1B735',
-  PURPLE: '#8E6CC1',
-}
 
 // 지형(물)은 클라이언트만 알고 있으므로, 서버가 계획한 신설역 좌표는 여기서 가장 가까운 땅으로 당긴다.
 function snapToLand(map: CityMapDef, posX: number, posY: number) {
@@ -237,6 +231,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const [hudSample, setHudSample] = useState<HudSample>({ continuousTick: 0, waitingPassengers: 0 })
   const [showInviteModal, setShowInviteModal] = useState(false)
   const [showCitySettingsModal, setShowCitySettingsModal] = useState(false)
+  const [showLineColorModal, setShowLineColorModal] = useState(false)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
   const [titleSaving, setTitleSaving] = useState(false)
@@ -1679,6 +1674,22 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
           />
         )}
 
+        {showLineColorModal && selectedLine && (
+          <LineColorPickerModal
+            lineName={selectedLine.name}
+            currentColor={resolveLineColor(selectedLine.color)}
+            usedColors={state.city.lines
+              .filter(line => line.id !== selectedLine.id)
+              .map(line => resolveLineColor(line.color))}
+            busy={busy}
+            onClose={() => setShowLineColorModal(false)}
+            onSave={async color => {
+              const next = await performAction({ type: 'SET_LINE_COLOR', lineId: selectedLine.id, color })
+              if (next) setShowLineColorModal(false)
+            }}
+          />
+        )}
+
         <div className={`${styles.liveStatus} ${goalJustReached ? styles.goalLiveStatus : ''} ${isGameOver ? styles.stoppedStatus : ''}`}>
           <span className={styles.liveDot} />
           <b>{isGameOver
@@ -1811,7 +1822,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                 className={line.id === selectedLineId ? styles.lineTabActive : ''}
                 onClick={() => selectLine(line.id)}
               >
-                <i style={{ background: LINE_COLORS[line.color] }} />
+                <i style={{ background: resolveLineColor(line.color) }} />
                 <span>{lineDisplayName(line.name)}</span>
                 <small>{line.status === 'SUSPENDED' ? '폐쇄' : '운행'}</small>
               </button>
@@ -1846,6 +1857,16 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
               disabled={busy}
             >
               {selectedLine.status === 'SUSPENDED' ? `${selectedLine.name} 운행 재개` : `${selectedLine.name} 폐쇄`}
+            </button>
+          )}
+          {selectedLine && (
+            <button
+              className={styles.colorPickerButton}
+              onClick={() => setShowLineColorModal(true)}
+              disabled={busy}
+            >
+              <i style={{ background: resolveLineColor(selectedLine.color) }} />
+              {selectedLine.name} 색상 변경
             </button>
           )}
           {selectedLine && (
@@ -1890,7 +1911,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                     >
                       <span
                         className={`${styles.trainBadge} ${selectedLine.mode === 'BUS' ? styles.busBadge : ''}`}
-                        style={{ background: LINE_COLORS[selectedLine.color] }}
+                        style={{ background: resolveLineColor(selectedLine.color) }}
                       >
                         <i /><i /><b>{index + 1}</b>
                       </span>
@@ -2190,7 +2211,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                   points={linePoints(line)}
                   className={`${styles.linePath} ${line.mode === 'BUS' ? styles.busPath : ''} ${line.id === selectedLineId ? styles.selectedLinePath : ''}`}
                   style={{
-                    stroke: LINE_COLORS[line.color],
+                    stroke: resolveLineColor(line.color),
                     // Mini Metro 느낌: 얇은 선, 줌과 무관하게 화면 기준 두께 유지
                     strokeWidth: (line.mode === 'BUS'
                       ? (line.id === selectedLineId ? 0.75 : 0.55)
@@ -2209,7 +2230,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
               if (!matrix || !from || !to) return null
               const cursor = new DOMPoint(segmentDrag.x, segmentDrag.y).matrixTransform(matrix.inverse())
               const ghostStyle = {
-                stroke: LINE_COLORS[line?.color ?? 'RED'],
+                stroke: resolveLineColor(line?.color ?? '#E9783C'),
                 strokeWidth: 0.95 * mapScale,
                 strokeDasharray: `${1.1 * mapScale} ${0.8 * mapScale}`,
               }
@@ -2235,7 +2256,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                   y2={cursor.y}
                   className={styles.linkGhost}
                   style={{
-                    stroke: LINE_COLORS[line?.color ?? 'RED'],
+                    stroke: resolveLineColor(line?.color ?? '#E9783C'),
                     strokeWidth: 0.95 * mapScale,
                     strokeDasharray: `${1.1 * mapScale} ${0.8 * mapScale}`,
                   }}
@@ -2304,7 +2325,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                 aria-label={`${lineDisplayName(badge.line.name)} ${badge.isHead ? '시작' : '종점'} — 역으로 끌어 연장`}
               >
                 <title>{lineDisplayName(badge.line.name)} 종점 · 역으로 끌어다 놓으면 연장됩니다</title>
-                <circle r="1.65" fill={LINE_COLORS[badge.line.color]} />
+                <circle r="1.65" fill={resolveLineColor(badge.line.color)} />
                 <text textAnchor="middle" y="0.64">{badge.label}</text>
               </g>
             ))}
@@ -2355,7 +2376,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
                   className={line.id === selectedLineId ? styles.mapLegendActive : ''}
                   onClick={() => selectLine(line.id)}
                 >
-                  <i style={{ background: LINE_COLORS[line.color] }} />{lineDisplayName(line.name)}{line.status === 'SUSPENDED' ? ' · 폐쇄' : ''}
+                  <i style={{ background: resolveLineColor(line.color) }} />{lineDisplayName(line.name)}{line.status === 'SUSPENDED' ? ' · 폐쇄' : ''}
                 </button>
               ))}
               <button

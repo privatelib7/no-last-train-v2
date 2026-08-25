@@ -334,6 +334,7 @@ function alightAndBoardAtStation(
   stationId: string,
   vehicle: EngineVehicle,
   line: EngineLine,
+  direction: number,
 ): void {
   // 지금 누적 중인(아직 확정 안 된) 경제 틱 번호로 찍는다 — flush 시 이 틱이 확정된다.
   const tickNumber = engine.currentTick + 1
@@ -355,7 +356,7 @@ function alightAndBoardAtStation(
   const room = vehicle.capacity - staying.length
   const queue = engine.waitQueues.get(stationId)
   if (room > 0 && queue && queue.length > 0) {
-    const ahead = new Set(stationsAhead(line.stations, stationId, vehicle.direction))
+    const ahead = new Set(stationsAhead(line.stations, stationId, direction))
     if (ahead.size > 0) {
       const boarded: EnginePassenger[] = []
       const remaining: EnginePassenger[] = []
@@ -426,7 +427,7 @@ export function advanceFrame(engine: LiveCityEngine, now: number): void {
       }, stepMinutes, line.mode, vehicle.isExpress ? expressStops : null)
 
       for (const stationId of motion.arrivedStationIds) {
-        alightAndBoardAtStation(engine, stationId, vehicle, line)
+        alightAndBoardAtStation(engine, stationId, vehicle, line, motion.direction)
       }
 
       vehicle.currentStationId = motion.currentStationId

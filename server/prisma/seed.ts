@@ -1,4 +1,4 @@
-import { PrismaClient, LineColor } from '@prisma/client'
+import { PrismaClient } from '@prisma/client'
 import { stationDwellMinutes } from '../src/lib/vehicle-motion'
 
 const db = new PrismaClient()
@@ -32,11 +32,11 @@ const SEOUL_LAYOUT = {
   ],
   lines: [
     {
-      color: 'RED' as LineColor, name: '1호선', depotX: 71, depotY: 9,
+      color: '#E9783C', name: '1호선', depotX: 71, depotY: 9,
       stations: ['노원역', '청량리역', '시청역', '서울역', '영등포역'], isPlayer: true,
     },
     {
-      color: 'BLUE' as LineColor, name: '2호선', depotX: 82, depotY: 56,
+      color: '#3F8EDB', name: '2호선', depotX: 82, depotY: 56,
       stations: ['홍대입구역', '시청역', '강남역', '잠실역'], isPlayer: false,
     },
   ],
@@ -169,7 +169,7 @@ async function ensureBusLine(cityId: string, mapKey: string) {
   const line = await db.line.create({
     data: {
       cityId,
-      color: 'GREEN',
+      color: '#55A96A',
       mode: 'BUS',
       name: 'A노선',
       status: 'OPERATING',
@@ -349,7 +349,7 @@ async function main() {
 
   const [central, north, seomyeon, gwangan, sasang, haeundae, dongnae, centum] = stations
   const lineDefs: Array<{
-    color: LineColor
+    color: string
     name: string
     playerId?: string
     stations: typeof stations
@@ -357,12 +357,12 @@ async function main() {
     depotY: number
   }> = [
     {
-      color: 'RED', name: '1호선', playerId: player.id,
+      color: '#E9783C', name: '1호선', playerId: player.id,
       stations: [north, central, seomyeon, dongnae],
       depotX: LINE_LAYOUT['1호선'].depotX, depotY: LINE_LAYOUT['1호선'].depotY,
     },
     {
-      color: 'BLUE', name: '2호선', stations: [sasang, seomyeon, gwangan, centum, haeundae],
+      color: '#3F8EDB', name: '2호선', stations: [sasang, seomyeon, gwangan, centum, haeundae],
       depotX: LINE_LAYOUT['2호선'].depotX, depotY: LINE_LAYOUT['2호선'].depotY,
     },
   ]

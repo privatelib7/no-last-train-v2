@@ -3,6 +3,7 @@ import { fetchCities, type LobbyCity } from '../api/cities'
 import { fetchRecentActivity, type ActivityItem } from '../api/activity'
 import type { AuthSession } from '../api/auth'
 import { unlockBgm } from '../lib/bgm'
+import { resolveLineColor } from '../lib/line-color'
 import NewCityModal from './NewCityModal'
 import styles from './LobbyPage.module.css'
 
@@ -14,14 +15,6 @@ interface Props {
   onSelectCity: (cityId: string) => void
   onLogout: () => void
   onOpenSettings: () => void
-}
-
-const LINE_COLORS: Record<string, string> = {
-  red: '#E07B35',
-  blue: '#5B9BD5',
-  green: '#5BBD72',
-  yellow: '#F5C842',
-  purple: '#A678D4',
 }
 
 function formatCreatedAt(iso: string) {
@@ -204,7 +197,7 @@ export default function LobbyPage({ session, onBack, onSelectCity, onLogout, onO
                   <div className={styles.cityRowIcon}>
                     {city.lines.length > 0 ? (
                       city.lines.slice(0, 4).map((l) => (
-                        <span key={l} className={styles.lineDot} style={{ background: LINE_COLORS[l] ?? '#C4BFB8' }} />
+                        <span key={l} className={styles.lineDot} style={{ background: resolveLineColor(l) }} />
                       ))
                     ) : (
                       <span className={styles.lineDotEmpty} />
