@@ -327,7 +327,7 @@ function LiveTransitLayer({
       <g
         className={styles.peopleLayer}
         clipPath="url(#city-land-clip)"
-        aria-label={`외부에서 역과 정류장으로 이동하는 시민 ${movingCitizens.length}명`}
+        aria-label={`도시에서 살고 역과 정류장으로 오가는 시민 ${movingCitizens.length}명`}
       >
         {movingCitizens.map(citizen => {
           const { position } = citizen

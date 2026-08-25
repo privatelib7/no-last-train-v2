@@ -1,5 +1,6 @@
 import type { GameLine, Station, StationType } from './api/game'
-import type { CityMapDef } from './maps'
+import type { CityMapDef, ZoneKind } from './maps'
+import { pointInPolygon } from './maps'
 import { stationDemandWeights } from './demand-profile'
 
 export type CitizenTravelMode = 'WALK' | 'WAIT' | 'BOARDING'
@@ -22,6 +23,8 @@ export type CitizenJourney = {
   generation: number
   /** 이 여정이 시작된 journeyTime. 여정은 반복되지 않고 끝나면 새로 뽑는다. */
   startTime: number
+  /** 이 시민이 사는 자리. 슬롯마다 고정이라 모든 여정이 여기서 시작해 여기로 돌아온다. */
+  home: Point
   targetStationId: string
   targetStationName: string
   accessMode: StationAccessMode
@@ -43,6 +46,23 @@ export type CitizenPosition = {
 }
 
 type StationWeights = Record<StationType, number>
+type StationOption = { station: Station; accessMode: StationAccessMode }
+
+/**
+ * 걸어서 역까지 갈 수 있다고 보는 최대 거리 (viewBox 0~100 기준, 1 ≈ 300m).
+ * 이 반경 밖에 사는 사람은 역으로 가지 않는다 — 맵 반대편에서 역까지 걸어오지 않게 하는 손잡이.
+ */
+export const CITIZEN_WALK_RANGE = 12
+/** 역이 없어도 사람은 산다 — 동네 볼일로 오가는 반경. */
+export const CITIZEN_ERRAND_RANGE = 7
+
+/** 집을 용도지역에 얼마나 몰아줄지. 나머지는 육지 전역에 고르게 흩어진다. */
+const HOME_IN_ZONE_SHARE = 0.6
+const HOME_ZONE_WEIGHTS: Record<ZoneKind, number> = {
+  residential: 3.2,
+  commercial: 1.6,
+  industrial: 0.8,
+}
 
 function randomUnit(seed: number, index: number, salt: number) {
   let value = Math.imul(seed + index * 374761393 + salt * 668265263, 1274126177)
@@ -68,8 +88,8 @@ export function pathStaysOnLand(from: Point, to: Point, map: CityMapDef) {
   return true
 }
 
-/** 노선 유무와 관계없이 모든 역을 목적지로 쓴다 (전역 스폰용). */
-function allStationsWithAccess(lines: GameLine[], stations: Station[]) {
+/** 노선 유무와 관계없이 모든 역을 목적지 후보로 쓴다. */
+function allStationsWithAccess(lines: GameLine[], stations: Station[]): StationOption[] {
   const modesByStation = new Map<string, Set<'SUBWAY' | 'BUS'>>()
   for (const line of lines) {
     for (const item of line.lineStations) {
@@ -89,64 +109,47 @@ function allStationsWithAccess(lines: GameLine[], stations: Station[]) {
   })
 }
 
+/** 집에서 걸어갈 만한 거리에 있고, 물을 건너지 않고 닿는 역만 남긴다. */
+function stationsWithinWalk(home: Point, options: StationOption[], map: CityMapDef): StationOption[] {
+  const reachable: StationOption[] = []
+  for (const option of options) {
+    const point = { x: option.station.posX, y: option.station.posY }
+    // 육로 판정은 표본이 많아 비싸다 — 반경으로 먼저 거른 역만 확인한다.
+    if (distanceBetween(home, point) > CITIZEN_WALK_RANGE) continue
+    if (!pathStaysOnLand(home, point, map)) continue
+    reachable.push(option)
+  }
+  return reachable
+}
+
+/** 가까운 역일수록, 그 시각 수요가 큰 역일수록 잘 뽑힌다. */
 function pickWeightedStation(
-  stations: Array<{ station: Station; accessMode: StationAccessMode }>,
+  options: StationOption[],
   weights: StationWeights,
+  home: Point,
   roll: number,
-) {
-  const total = stations.reduce((sum, item) => sum + (weights[item.station.type] ?? 1), 0)
+): StationOption | null {
+  const scored = options.map(option => {
+    const distance = distanceBetween(home, { x: option.station.posX, y: option.station.posY })
+    const proximity = 1 - 0.72 * Math.min(1, distance / CITIZEN_WALK_RANGE)
+    return { option, score: (weights[option.station.type] ?? 1) * proximity }
+  })
+  const total = scored.reduce((sum, item) => sum + item.score, 0)
+  if (total <= 0) return options[options.length - 1] ?? null
   let cursor = roll * total
-  for (const item of stations) {
-    cursor -= weights[item.station.type] ?? 1
-    if (cursor <= 0) return item
+  for (const item of scored) {
+    cursor -= item.score
+    if (cursor <= 0) return item.option
   }
-  return stations[stations.length - 1] ?? null
+  return options[options.length - 1] ?? null
 }
 
-// 역 주변 링을 먼 쪽부터 훑는다. 역 코앞에서 사람이 솟아나는 것처럼 보이지 않게 하기 위함.
-const STATION_SPAWN_RINGS = [24, 18, 13, 9, 6]
-
-function landSafePointNearStation(
-  station: Station,
-  map: CityMapDef,
-  seed: number,
-  index: number,
-  salt: number,
-): Point {
-  const stationPoint = { x: station.posX, y: station.posY }
-  for (const [ring, radiusBand] of STATION_SPAWN_RINGS.entries()) {
-    for (let attempt = 0; attempt < 16; attempt++) {
-      const step = ring * 16 + attempt
-      const angle = randomUnit(seed, index, salt + step * 2) * Math.PI * 2
-      const radius = radiusBand * (0.78 + randomUnit(seed, index, salt + step * 2 + 1) * 0.32)
-      const point = {
-        x: station.posX + Math.cos(angle) * radius,
-        y: station.posY + Math.sin(angle) * radius,
-      }
-      if (map.isLand(point.x, point.y) && pathStaysOnLand(point, stationPoint, map)) return point
-    }
-  }
-  return stationPoint
-}
-
-/** 맵 전역 육지에서 스폰 지점을 고른다. 역까지 육로가 있으면 우선, 실패 시 역에서 먼 링부터 폴백. */
-function landSafePointOnMap(
-  station: Station,
-  map: CityMapDef,
-  seed: number,
-  index: number,
-  salt: number,
-): Point {
-  const stationPoint = { x: station.posX, y: station.posY }
-  for (let attempt = 0; attempt < 96; attempt++) {
-    const point = {
-      x: 4 + randomUnit(seed, index, salt + attempt * 3) * 92,
-      y: 4 + randomUnit(seed, index, salt + 1 + attempt * 3) * 88,
-    }
-    if (!map.isLand(point.x, point.y)) continue
-    if (pathStaysOnLand(point, stationPoint, map)) return point
-  }
-  return landSafePointNearStation(station, map, seed, index, salt + 977)
+/**
+ * 역세권에 살아도 매번 역으로 나가지는 않는다. 수요가 큰 시각일수록 자주 나간다
+ * (수요 곡선은 도시 평균 역에서 1.0 근처).
+ */
+function stationTripChance(weight: number) {
+  return Math.min(0.9, Math.max(0.15, 0.18 + weight * 0.62))
 }
 
 function deterministicLandPoint(map: CityMapDef, seed: number, index: number, salt: number): Point {
@@ -170,6 +173,83 @@ function deterministicLandPoint(map: CityMapDef, seed: number, index: number, sa
   return anchor
 }
 
+/** 주거지에 사람이 몰리고 상업·산업지에도 얼마간 산다 — 도시가 잡음이 아니라 동네처럼 보이도록. */
+function zoneHomePoint(map: CityMapDef, seed: number, index: number): Point | null {
+  if (map.zones.length === 0) return null
+
+  const total = map.zones.reduce((sum, zone) => sum + HOME_ZONE_WEIGHTS[zone.kind], 0)
+  let cursor = randomUnit(seed, index, 611) * total
+  let picked = map.zones[map.zones.length - 1]
+  for (const zone of map.zones) {
+    cursor -= HOME_ZONE_WEIGHTS[zone.kind]
+    if (cursor <= 0) {
+      picked = zone
+      break
+    }
+  }
+
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const [x, y] of picked.points) {
+    minX = Math.min(minX, x)
+    minY = Math.min(minY, y)
+    maxX = Math.max(maxX, x)
+    maxY = Math.max(maxY, y)
+  }
+
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const point = {
+      x: minX + randomUnit(seed, index, 620 + attempt * 2) * (maxX - minX),
+      y: minY + randomUnit(seed, index, 621 + attempt * 2) * (maxY - minY),
+    }
+    if (!pointInPolygon(point.x, point.y, picked.points)) continue
+    if (!map.isLand(point.x, point.y)) continue
+    return point
+  }
+  return null
+}
+
+/**
+ * 시민이 사는 자리 — 슬롯마다 고정이고 역이 있든 없든 맵 전역에 생긴다.
+ * 노선을 깔지 않은 동네에도 사람이 살아 있게 하는 지점.
+ */
+function citizenHome(map: CityMapDef, seed: number, index: number): Point {
+  if (randomUnit(seed, index, 610) < HOME_IN_ZONE_SHARE) {
+    const zoned = zoneHomePoint(map, seed, index)
+    if (zoned) return zoned
+  }
+  return deterministicLandPoint(map, seed, index, 500)
+}
+
+/** 집을 중심으로 한 원 안에서, 물을 건너지 않고 걸어갈 수 있는 지점을 고른다. */
+function localLandPoint(
+  origin: Point,
+  minRadius: number,
+  maxRadius: number,
+  map: CityMapDef,
+  seed: number,
+  index: number,
+  salt: number,
+): Point | null {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const angle = randomUnit(seed, index, salt + attempt * 2) * Math.PI * 2
+    // sqrt를 씌워야 원 안에 고르게 퍼진다 (안 그러면 중심에 뭉친다).
+    const radius = minRadius
+      + (maxRadius - minRadius) * Math.sqrt(randomUnit(seed, index, salt + attempt * 2 + 1))
+    const point = {
+      x: origin.x + Math.cos(angle) * radius,
+      y: origin.y + Math.sin(angle) * radius,
+    }
+    if (point.x < 2 || point.x > 98 || point.y < 2 || point.y > 98) continue
+    if (!map.isLand(point.x, point.y)) continue
+    if (!pathStaysOnLand(origin, point, map)) continue
+    return point
+  }
+  return null
+}
+
 type CitizenAppearance = {
   radius: number
   opacity: number
@@ -185,33 +265,28 @@ function citizenAppearance(seed: number, index: number): CitizenAppearance {
   }
 }
 
-// 아직 역이 하나도 없을 때 도시가 텅 비어 보이지 않도록, 목적지 없이 배회하는 시민을 만든다.
+/**
+ * 걸어갈 만한 역이 없거나, 있어도 이번엔 나가지 않는 사람의 여정.
+ * 집 근처를 오가기만 하므로 역이 없는 동네도 비어 보이지 않는다.
+ */
 function createAmbientJourney(
   seed: number,
   index: number,
   generation: number,
   map: CityMapDef,
+  home: Point,
 ): CitizenJourney {
   const salt = 500 + generation * 6151
-  // 배회 시민의 "집"은 슬롯마다 고정 — 다음 여정을 받아도 살던 자리에서 다시 나선다.
-  const start = deterministicLandPoint(map, seed, index, 500)
-  let destination = start
-
-  for (let attempt = 0; attempt < 96; attempt++) {
-    const candidate = deterministicLandPoint(map, seed, index, salt + 200 + attempt * 193)
-    if (distanceBetween(start, candidate) >= 4 && pathStaysOnLand(start, candidate, map)) {
-      destination = candidate
-      break
-    }
-  }
-
-  const walkDuration = Math.max(3, distanceBetween(start, destination) / 1.3)
-  const pauseDuration = 0.8 + randomUnit(seed, index, salt + 440) * 1.2
+  const destination = localLandPoint(home, 2.2, CITIZEN_ERRAND_RANGE, map, seed, index, salt + 200)
+    ?? home
+  const walkDuration = Math.max(2.2, distanceBetween(home, destination) / 1.3)
+  const stayDuration = 1.2 + randomUnit(seed, index, salt + 440) * 2.4
+  const restDuration = 1 + randomUnit(seed, index, salt + 441) * 3
   const legs: JourneyLeg[] = [
-    { from: start, to: destination, mode: 'WALK', duration: walkDuration },
-    { from: destination, to: destination, mode: 'WAIT', duration: pauseDuration },
-    { from: destination, to: start, mode: 'WALK', duration: walkDuration },
-    { from: start, to: start, mode: 'WAIT', duration: pauseDuration },
+    { from: home, to: destination, mode: 'WALK', duration: walkDuration },
+    { from: destination, to: destination, mode: 'WAIT', duration: stayDuration },
+    { from: destination, to: home, mode: 'WALK', duration: walkDuration },
+    { from: home, to: home, mode: 'WAIT', duration: restDuration },
   ]
 
   return {
@@ -219,43 +294,50 @@ function createAmbientJourney(
     index,
     generation,
     startTime: 0,
+    home,
     targetStationId: 'city-ambient',
     targetStationName: map.name,
     accessMode: 'CITY',
     legs,
     totalDuration: legs.reduce((sum, leg) => sum + leg.duration, 0),
     ...citizenAppearance(seed, index),
-    landSafe: pathStaysOnLand(start, destination, map),
+    landSafe: pathStaysOnLand(home, destination, map),
   }
 }
 
+/** 집에서 걸어 나와 역까지 가는 여정. 이번 세대엔 나가지 않기로 하면 null. */
 function createStationJourney(
   seed: number,
   index: number,
   generation: number,
   map: CityMapDef,
-  availableStations: Array<{ station: Station; accessMode: StationAccessMode }>,
-  busStops: Array<{ station: Station; accessMode: StationAccessMode }>,
+  home: Point,
+  reachable: StationOption[],
   weights: StationWeights,
 ): CitizenJourney | null {
   const salt = 120 + generation * 7919
-  // 운행 중인 버스 정류장이 있으면 일부 시민은 버스 정류장으로 향하게 한다.
+  // 걸어갈 만한 버스 정류장이 있으면 일부 시민은 그쪽으로 향하게 한다.
+  const busStops = reachable.filter(item => item.accessMode === 'BUS')
   const forcedBusStop = busStops.length > 0 && (index + generation) % 12 === 0
     ? busStops[(index + generation) % busStops.length]
     : null
   const target = forcedBusStop ?? pickWeightedStation(
-    availableStations,
+    reachable,
     weights,
+    home,
     randomUnit(seed, index, salt),
   )
   if (!target) return null
 
+  const weight = weights[target.station.type] ?? 1
+  if (randomUnit(seed, index, salt + 71) > stationTripChance(weight)) return null
+
   const stationPoint = { x: target.station.posX, y: target.station.posY }
-  // 노선 근처가 아니라 맵 전역 육지에서 리스폰한 뒤 역으로 걸어온다.
-  const outsidePoint = landSafePointOnMap(target.station, map, seed, index, salt + 280)
-  const walkDuration = Math.max(2.4, distanceBetween(outsidePoint, stationPoint) / 1.8)
+  const walkDuration = Math.max(2.4, distanceBetween(home, stationPoint) / 1.8)
+  const leaveHomeDelay = 0.6 + randomUnit(seed, index, salt + 72) * 2.6
   const legs: JourneyLeg[] = [
-    { from: outsidePoint, to: stationPoint, mode: 'WALK', duration: walkDuration },
+    { from: home, to: home, mode: 'WAIT', duration: leaveHomeDelay },
+    { from: home, to: stationPoint, mode: 'WALK', duration: walkDuration },
     { from: stationPoint, to: stationPoint, mode: 'WAIT', duration: 1.45 },
     { from: stationPoint, to: stationPoint, mode: 'BOARDING', duration: 0.9 },
   ]
@@ -265,13 +347,14 @@ function createStationJourney(
     index,
     generation,
     startTime: 0,
+    home,
     targetStationId: target.station.id,
     targetStationName: target.station.name,
     accessMode: target.accessMode,
     legs,
     totalDuration: legs.reduce((sum, leg) => sum + leg.duration, 0),
     ...citizenAppearance(seed, index),
-    landSafe: pathStaysOnLand(outsidePoint, stationPoint, map),
+    landSafe: pathStaysOnLand(home, stationPoint, map),
   }
 }
 
@@ -298,11 +381,9 @@ export function advanceCitizenJourneys(
   },
 ): CitizenJourney[] {
   const { seed, waitingCount, gameHour, weekend, stations, lines, map, previous, journeyTime } = options
-  // 렌더 비용이 커서 상한을 낮춘다(예전 64~128 → 24~48).
-  const count = Math.min(48, Math.max(24, Math.round(20 + Math.log10(waitingCount + 10) * 10)))
-  // 역이 하나도 없으면(노선 유무와 무관) 배회 시민으로 도시가 비어 보이지 않게 한다.
-  const availableStations = allStationsWithAccess(lines, stations)
-  const busStops = availableStations.filter(item => item.accessMode === 'BUS')
+  // 사람이 노선 주변이 아니라 도시 전역에 흩어져 살므로 예전(24~48)보다 조금 더 채운다.
+  const count = Math.min(64, Math.max(32, Math.round(28 + Math.log10(waitingCount + 10) * 12)))
+  const allStations = allStationsWithAccess(lines, stations)
   // 서버 승객 생성과 같은 공공데이터 프로필을 써서 화면 위 사람 흐름을 맞춘다.
   // map.key가 어느 도시 곡선을 쓸지 정한다 (부산 맵이면 부산 지하철 실측).
   const weights = stationDemandWeights(map.key, gameHour, weekend) as StationWeights
@@ -327,13 +408,14 @@ export function advanceCitizenJourneys(
     respawnBudget -= 1
 
     const generation = (current?.generation ?? -1) + 1
-    const next = availableStations.length === 0
-      ? createAmbientJourney(seed, index, generation, map)
-      : createStationJourney(seed, index, generation, map, availableStations, busStops, weights)
-    if (!next) {
-      if (current) journeys.push(current)
-      continue
-    }
+    // 집은 슬롯마다 고정 — 역이 새로 생겨도 살던 동네가 바뀌지는 않는다.
+    const home = current?.home ?? citizenHome(map, seed, index)
+    const reachable = allStations.length > 0 ? stationsWithinWalk(home, allStations, map) : []
+    const next = (reachable.length > 0
+      ? createStationJourney(seed, index, generation, map, home, reachable, weights)
+      : null)
+      // 걸어갈 역이 없거나 오늘은 나가지 않기로 한 사람은 동네에 남는다.
+      ?? createAmbientJourney(seed, index, generation, map, home)
 
     // 처음 들어오는 시민은 서로 다른 위상에서 시작시켜 한 줄로 몰려다니지 않게 한다.
     // (바로 여정이 끝나버리지 않도록 0.85 주기까지만 밀어 둔다)
