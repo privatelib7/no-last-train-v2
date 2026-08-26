@@ -161,13 +161,30 @@ function stationTripChance(weight: number) {
   return Math.min(0.9, Math.max(0.15, 0.18 + weight * 0.62))
 }
 
+const MAX_HOME_ZONE_WEIGHT = Math.max(...Object.values(HOME_ZONE_WEIGHTS))
+
+/**
+ * 이 지점이 속한 구역의 HOME_ZONE_WEIGHTS 가중치. 구역이 육지 전체를 덮으므로
+ * (maps.ts) 못 찾는 경우는 없다시피 하지만, 혹시 몰라 최대 가중치로 둔다 —
+ * "못 찾음 = 배제"보다는 "못 찾음 = 통과"가 안전하다.
+ */
+function homeZoneWeightAt(map: CityMapDef, point: Point): number {
+  const district = map.districts.find(d => pointInDistrict(point.x, point.y, d))
+  return district ? HOME_ZONE_WEIGHTS[district.kind] : MAX_HOME_ZONE_WEIGHT
+}
+
 function deterministicLandPoint(map: CityMapDef, seed: number, index: number, salt: number): Point {
   for (let attempt = 0; attempt < 96; attempt++) {
     const point = {
       x: 4 + randomUnit(seed, index, salt + attempt * 2) * 92,
       y: 4 + randomUnit(seed, index, salt + attempt * 2 + 1) * 92,
     }
-    if (map.isLand(point.x, point.y)) return point
+    if (!map.isLand(point.x, point.y)) continue
+    // 구역 전체를 그냥 고르게 훑으면 산·녹지처럼 넓기만 한 구역이 면적으로 밀어붙여
+    // 밀도(HOME_ZONE_WEIGHTS)를 무시하게 된다 — 뽑은 자리의 가중치만큼만 받아들인다.
+    const accept = randomUnit(seed, index, salt + 700 + attempt) * MAX_HOME_ZONE_WEIGHT
+    if (accept > homeZoneWeightAt(map, point)) continue
+    return point
   }
 
   // anchor(손으로 찍어 둔 «반드시 땅인 좌표») 폴백은 없앴다. isLand가 비트마스크 조회라
