@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { authorizeCityOwner } from '@/lib/access'
+import { authorizeCityAccess } from '@/lib/access'
 import { parseCityCommand } from '@/lib/city-command-parser'
 import { db } from '@/lib/db'
 import { z } from 'zod'
@@ -9,13 +9,15 @@ const ParseCommandSchema = z.object({
 })
 
 // POST /api/cities/[id]/commands/parse — 자연어 도시 운영 명령을 안전한 액션으로 변환
+// 여기서 나온 액션은 각각 /api/cities/[id]/actions가 다시 authorizeCityAccess로 검사하므로
+// (관제장 전용이 아니다), 파싱 단계도 관제장으로 좁힐 이유가 없다 — 관제원도 AI 운영관을 쓸 수 있어야 한다.
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params
 
-  const auth = await authorizeCityOwner(req, id)
+  const auth = await authorizeCityAccess(req, id)
   if (auth.error) return auth.error
 
   const body = await req.json().catch(() => null)

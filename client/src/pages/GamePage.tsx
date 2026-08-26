@@ -18,9 +18,8 @@ import {
 } from '../api/game'
 import type { AuthSession } from '../api/auth'
 import { updateRoomTitle } from '../api/cities'
-import { leaveCursor, syncCursor, type RemoteCursor } from '../api/cursors'
-import { connectRealtime } from '../api/realtime'
-import { newlyJoinedPlayers, notifyEmergency } from '../lib/notifications'
+import { connectRealtime, type RealtimeConnection, type RemoteCursor } from '../api/realtime'
+import { notifyEmergency } from '../lib/notifications'
 import { playGoalUnlockSfx } from '../lib/sfx'
 import InviteModal from './InviteModal'
 import CitySettingsModal from './CitySettingsModal'
@@ -38,6 +37,7 @@ interface Props {
   session: AuthSession | null
   onBack: () => void
   onRequireLogin: () => void
+  onOpenSettings: () => void
 }
 
 type DragTarget = { kind: 'STATION'; id: string } | null
@@ -90,8 +90,9 @@ type SegmentUndoEntry = {
 const LIVE_TICK_MS = 3000
 // HUD 시계(일차·시각)가 밀린 틱을 따라잡을 때도 이 배수를 넘지 않는 속도로만 전진한다
 // (그냥 서버 값으로 스냅하면 시계가 훅 튀어 보인다).
-// 커서: 움직일 때는 200ms, 가만히 있을 때는 2초 하트비트 (예전 45ms는 DB/액션을 굶김)
-const CURSOR_MOVE_SYNC_MS = 200
+// 커서: 이제 REST 폴링이 아니라 실시간 웹소켓으로 밀어준다(DB를 안 거치니 굶길 게 없다).
+// 움직일 때는 50ms(초당 20회), 가만히 있을 때는 2초 하트비트 — 서버 TTL(5초)과 맞춘 값.
+const CURSOR_MOVE_SYNC_MS = 50
 const CURSOR_HEARTBEAT_MS = 2000
 const CURSOR_MOVE_THRESHOLD = 0.35
 // 서버 cursor-presence.ts 의 CURSOR_COLORS 와 동일한 팔레트 (본인 아바타 색 계산용)
@@ -208,7 +209,9 @@ function isAutoStationName(name: string) {
 function lineDisplayName(name: string) {
   return /^[A-Z]$/.test(name) ? `${name}노선` : name
 }
-export default function GamePage({ cityId, session, onBack, onRequireLogin }: Props) {
+export default function GamePage({ cityId, session, onBack, onRequireLogin, onOpenSettings }: Props) {
+  const onBackRef = useRef(onBack)
+  onBackRef.current = onBack
   const [state, setState] = useState<CityState | null>(null)
   /**
    * 라이브 엔진(서버가 100ms 인메모리 틱으로 도시를 굴리는 경우)이 motion 메시지에
@@ -264,6 +267,8 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const suppressMapClick = useRef(false)
   const mapRef = useRef<SVGSVGElement | null>(null)
   const stateRef = useRef<CityState | null>(null)
+  /** 파산·행복도 유예 카운트다운의 "마지막으로 서버가 확인해준 시점" 기준점 — 아래 참고 */
+  const graceBaselineRef = useRef<{ ticksRemaining: number; atContinuousTick: number } | null>(null)
   const performActionRef = useRef<((action: CityAction) => Promise<CityState | null>) | null>(null)
   const undoLastSegmentRef = useRef<(() => Promise<void>) | null>(null)
   const armNewLineRef = useRef<((mode: 'SUBWAY' | 'BUS') => void) | null>(null)
@@ -284,8 +289,9 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const cashEmergencyRef = useRef(false)
   const gameOverRiskRef = useRef(false)
   const gameOverFiredRef = useRef(false)
-  const presenceBaselineReadyRef = useRef(false)
   const knownRemotePlayerIdsRef = useRef<Set<string>>(new Set())
+  /** 커서 전송용 — 실시간 연결 effect가 채워두면 커서 push effect가 그걸로 보낸다 */
+  const realtimeConnectionRef = useRef<RealtimeConnection | null>(null)
   /** 서버 /motion 스냅샷 — LiveTransitLayer가 읽어 차량 좌표를 그린다 */
   const motionRef = useRef<CityMotionSnapshot | null>(null)
   const motionClockOffsetRef = useRef(0)
@@ -521,6 +527,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     readyGateStartedAtRef.current = Date.now()
     hasRevealedMapRef.current = false
     loadingBacklogRef.current = null
+    graceBaselineRef.current = null
     setHudSample({ continuousTick: 0, waitingPassengers: 0 })
     fetchCity(cityId, session?.token)
       .then(next => {
@@ -534,14 +541,16 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
         const status = err instanceof ApiError ? err.status : null
         if (status === 404) {
           // 삭제된 도시 ID가 localStorage에 남은 경우 등 — 로비로 복귀
-          onBack()
+          onBackRef.current()
           return
         }
         setError(err instanceof Error ? err.message : '도시를 불러오지 못했습니다.')
         setErrorStatus(status)
       })
     return () => { cancelled = true }
-  }, [cityId, session?.token, onBack])
+    // onBack은 설정 화면으로 갈 때마다 App이 새 함수를 넘긴다. 의존성에 넣으면
+    // 도시를 다시 받아 로딩 화면이 떠 버리므로 cityId·토큰이 바뀔 때만 다시 연다.
+  }, [cityId, session?.token])
 
   // 도시 상태·차량 위치를 서버가 밀어주는 WebSocket 구독 — 예전 2500ms/500ms
   // HTTP 폴링을 대체한다. 액션(역 짓기 등)은 여전히 HTTP REST로 남아 있다.
@@ -610,11 +619,43 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
           }
         }
       },
+      onCursorInit: cursors => {
+        // 이미 그 방에 있던 사람들 — "방금 접속"으로 잘못 알리지 않게 기준선만 세운다.
+        knownRemotePlayerIdsRef.current = new Set(cursors.map(cursor => cursor.playerId))
+        setRemoteCursors(cursors)
+      },
+      onCursor: cursor => {
+        if (!knownRemotePlayerIdsRef.current.has(cursor.playerId)) {
+          knownRemotePlayerIdsRef.current = new Set(knownRemotePlayerIdsRef.current).add(cursor.playerId)
+          void notifyEmergency(
+            `${stateRef.current?.city.roomTitle ?? '관제실'} — 동료 접속`,
+            `${cursor.nickname}님이 관제실에 접속했습니다.`,
+            `nlt-player-${cityId}-${cursor.playerId}`,
+          )
+        }
+        setRemoteCursors(prev => {
+          const index = prev.findIndex(item => item.playerId === cursor.playerId)
+          if (index === -1) return [...prev, cursor]
+          const existing = prev[index]
+          if (existing.x === cursor.x && existing.y === cursor.y && existing.nickname === cursor.nickname) return prev
+          const next = prev.slice()
+          next[index] = cursor
+          return next
+        })
+      },
+      onCursorLeave: playerId => {
+        knownRemotePlayerIdsRef.current.delete(playerId)
+        setRemoteCursors(prev => prev.filter(cursor => cursor.playerId !== playerId))
+      },
       onError: message => {
         setError(message)
       },
     })
-    return () => connection.close()
+    realtimeConnectionRef.current = connection
+    return () => {
+      realtimeConnectionRef.current = null
+      connection.close()
+    }
   }, [cityId, session?.token])
 
   // 브라우저 창 전체 포인터 추적 (지도만이 아니라 페이지 전역, 뷰포트 % 좌표 0~100)
@@ -642,18 +683,18 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
     }
   }, [session])
 
-  // 커서/프레즌스: 이동 시에만 빠르게, 유휴 시에는 하트비트만 (액션 API와 DB 경쟁 완화)
+  // 커서/프레즌스: 실시간 웹소켓으로 밀어준다 — REST 왕복이 없으니 DB와 경쟁하지 않고,
+  // 서버가 타이머 없이 받은 즉시 같은 방에 전달해 지연이 거의 없다. 움직일 때만 50ms
+  // 간격으로, 거의 안 움직이면(임계값 미만) 2초 하트비트로만 보낸다.
   useEffect(() => {
     const token = session?.token
     if (!token) return
-    presenceBaselineReadyRef.current = false
     knownRemotePlayerIdsRef.current = new Set()
     let cancelled = false
-    let inflight = false
     let lastSentAt = 0
 
-    const pushCursors = async () => {
-      if (cancelled || inflight) return
+    const pushCursor = () => {
+      if (cancelled) return
       const pos = cursorPosRef.current
       const x = pos?.x ?? cursorLastSentRef.current?.x ?? 50
       const y = pos?.y ?? cursorLastSentRef.current?.y ?? 50
@@ -661,58 +702,22 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
       const moved = !prev || Math.hypot(x - prev.x, y - prev.y) >= CURSOR_MOVE_THRESHOLD
       const interval = moved ? CURSOR_MOVE_SYNC_MS : CURSOR_HEARTBEAT_MS
       if (lastSentAt > 0 && Date.now() - lastSentAt < interval) return
-
-      inflight = true
-      try {
-        const result = await syncCursor(cityId, token, x, y)
-        if (cancelled) return
-        lastSentAt = Date.now()
-        cursorLastSentRef.current = { x, y }
-        const nextPlayerIds = new Set(result.cursors.map(cursor => cursor.playerId))
-        if (!presenceBaselineReadyRef.current) {
-          // 첫 동기화에 이미 있던 사람은 "방금 접속"한 것이 아니므로 기준선만 세운다.
-          presenceBaselineReadyRef.current = true
-        } else {
-          for (const cursor of newlyJoinedPlayers(knownRemotePlayerIdsRef.current, result.cursors)) {
-            void notifyEmergency(
-              `${stateRef.current?.city.roomTitle ?? '관제실'} — 동료 접속`,
-              `${cursor.nickname}님이 관제실에 접속했습니다.`,
-              `nlt-player-${cityId}-${cursor.playerId}`,
-            )
-          }
-        }
-        knownRemotePlayerIdsRef.current = nextPlayerIds
-        setRemoteCursors(prev => {
-          const next = result.cursors
-          if (
-            prev.length === next.length
-            && prev.every((item, i) => (
-              item.playerId === next[i].playerId
-              && item.x === next[i].x
-              && item.y === next[i].y
-              && item.nickname === next[i].nickname
-            ))
-          ) return prev
-          return next
-        })
-      } catch {
-        // 일시 네트워크 오류는 다음 틱에서 재시도 — 기존 표시는 유지
-      } finally {
-        inflight = false
-      }
+      realtimeConnectionRef.current?.sendCursor(x, y)
+      lastSentAt = Date.now()
+      cursorLastSentRef.current = { x, y }
     }
 
-    const timer = window.setInterval(() => { void pushCursors() }, CURSOR_MOVE_SYNC_MS)
-    void pushCursors()
+    const timer = window.setInterval(pushCursor, CURSOR_MOVE_SYNC_MS)
+    pushCursor()
     return () => {
       cancelled = true
       window.clearInterval(timer)
       cursorPosRef.current = null
       cursorLastSentRef.current = null
-      presenceBaselineReadyRef.current = false
       knownRemotePlayerIdsRef.current = new Set()
       setRemoteCursors([])
-      void leaveCursor(cityId, token)
+      // 내 커서 제거는 REST DELETE가 아니라 웹소켓 연결이 끊기면서(서버 close 핸들러가
+      // 자동으로) 처리된다 — 위쪽 실시간 연결 effect의 cleanup이 곧 이어서 실행된다.
     }
   }, [cityId, session?.token])
 
@@ -1002,7 +1007,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
 
   const runCityCommand = async (rawCommand: string) => {
     const command = rawCommand.trim()
-    if (!command || busy || commandBusy || !state?.isOwner) return
+    if (!command || busy || commandBusy || !state) return
 
     appendCommandMessage({ role: 'user', text: command })
     setCommandInput('')
@@ -1455,12 +1460,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
               key={district.name}
               className={`${styles.district} ${styles[`district_${district.kind}`]}`}
               d={district.d}
-            >
-              {/* 이름은 마우스를 올렸을 때만 뜬다. 구역이 서른 개가 넘어 지도에 다 적으면
-                  글자끼리 겹치고, 그렇다고 색만 두면 범례를 매번 찾아봐야 한다.
-                  이 저장소가 이미 쓰는 방식(제목 바꾸기·설정 버튼의 title)과 같다. */}
-              <title>{district.name}</title>
-            </path>
+            />
           ))}
         </g>
         {/* 등고선은 «구역 위». 머리카락 굵기라 반투명 채움 아래 깔면 뭉개진다.
@@ -1615,9 +1615,33 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
   const isGameOver = state.city.status === 'GAME_OVER'
   const bankruptcyRisk = state.city.cashBalance <= state.economyRules.bankruptLimit
   const happinessRisk = state.city.happiness <= state.economyRules.criticalHappiness
-  const riskTicks = bankruptcyRisk ? state.city.insolvencyTicks : happinessRisk ? state.city.unhappyTicks : 0
-  const graceRemaining = Math.max(0, state.economyRules.gameOverGraceTicks - riskTicks)
-  const graceHours = Math.ceil(graceRemaining / TICKS_PER_HOUR)
+  // 파산·행복도는 서버에서 독립적으로 카운트되는 별개의 유예 시계다(economy.ts) — 한쪽이
+  // 지금 이 순간 기준치를 넘었다고 그 카운터만 보여주면, 실제로는 회복된 줄 알았던
+  // 반대쪽 카운터가 먼저 유예를 다 써서 "표시된 시간보다 일찍" 게임오버로 보일 수 있다.
+  // 실제로 게임을 끝내는 건 둘 중 먼저 한계에 닿는 쪽이므로, 표시도 항상 더 급한 쪽을 따른다.
+  const insolvencyGraceRemaining = state.economyRules.gameOverGraceTicks - state.city.insolvencyTicks
+  const unhappyGraceRemaining = state.economyRules.gameOverGraceTicks - state.city.unhappyTicks
+  const bankruptcyIsMoreUrgent = insolvencyGraceRemaining <= unhappyGraceRemaining
+  const graceRemaining = Math.max(0, bankruptcyIsMoreUrgent ? insolvencyGraceRemaining : unhappyGraceRemaining)
+  // state.city는 2.5초 주기로만 갱신돼 "약 N게임시간"이 한동안 안 움직이는 것처럼 보였다.
+  // continuousTick은 이미 500ms마다 부드럽게 전진하는 값(위 gameHour 등과 같은 시계)이라,
+  // 마지막 city 동기화 이후 흐른 만큼을 그대로 빼주면 별도 타이머 없이도 실시간 카운트다운처럼 보인다.
+  //
+  // 처음엔 currentTick(모션 스냅샷의 최신 틱, motion/city 중 더 빠른 쪽)을 기준점으로 뺐는데
+  // 이게 continuousTick과 다른 시계라 — motion이 새로 오면 currentTick만 먼저 튀고
+  // continuousTick의 부드러운 보간이 아직 못 따라온 순간엔 둘의 차가 순간적으로 줄어들거나
+  // 0으로 꺼져 남은 시간이 훅 올라갔다 다시 내려가는(불안정한) 걸로 보였다.
+  // 그래서 city가 실제로 갱신된 "그 순간의 continuousTick" 자체를 기준점으로 따로 잡아
+  // 저장해두고, 그 이후로는 continuousTick 혼자만(자기 자신과 비교)으로 흐른 시간을 잰다 —
+  // continuousTick은 그 자체로는 절대 거꾸로 가지 않으므로 이제 단조 감소만 한다.
+  if (!graceBaselineRef.current || graceBaselineRef.current.ticksRemaining !== graceRemaining) {
+    graceBaselineRef.current = { ticksRemaining: graceRemaining, atContinuousTick: continuousTick }
+  }
+  const ticksSinceCitySync = Math.max(0, continuousTick - graceBaselineRef.current.atContinuousTick)
+  const liveGraceRemaining = Math.max(0, graceBaselineRef.current.ticksRemaining - ticksSinceCitySync)
+  const liveGraceMinutes = Math.round(liveGraceRemaining * (60 / TICKS_PER_HOUR))
+  const graceCountdownHours = Math.floor(liveGraceMinutes / 60)
+  const graceCountdownMinutes = liveGraceMinutes % 60
   const commandExamples: string[] = []
   const [firstCommandStation, secondCommandStation] = state.city.stations
   if (firstCommandStation && secondCommandStation) {
@@ -1696,7 +1720,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
               )}
             </div>
             <div className={styles.headerActions}>
-              {state.isOwner && session && (
+              {session && (
                 <button
                   className={`${styles.inviteButton} ${styles.iconOnlyButton}`}
                   onClick={() => setShowCitySettingsModal(true)}
@@ -1738,15 +1762,20 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
           />
         )}
 
-        {state.isOwner && session && showCitySettingsModal && (
+        {session && showCitySettingsModal && (
           <CitySettingsModal
             cityId={cityId}
             roomTitle={state.city.roomTitle}
             playerToken={session.token}
+            isOwner={state.isOwner}
             onClose={() => setShowCitySettingsModal(false)}
             onDeleted={() => {
               setShowCitySettingsModal(false)
               onBack()
+            }}
+            onOpenMoreSettings={() => {
+              setShowCitySettingsModal(false)
+              onOpenSettings()
             }}
           />
         )}
@@ -1812,83 +1841,83 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin }: Pr
           </div>
           {(bankruptcyRisk || happinessRisk) && !isGameOver && (
             <p className={styles.riskWarning} role="status">
-              {bankruptcyRisk ? '파산 위험' : '행복도 위험'} · 약 {graceHours}게임시간 안에 회복하세요
+              {bankruptcyIsMoreUrgent ? '파산 위험' : '행복도 위험'} · {graceCountdownHours > 0
+                ? `${graceCountdownHours}시간 ${graceCountdownMinutes}분`
+                : `${graceCountdownMinutes}분`} 안에 회복하세요
             </p>
           )}
         </section>
 
-        {state.isOwner && (
-          <section className={styles.controlSection} ref={commandSectionRef}>
-            <div className={styles.sectionHeading}>
-              <span>AI</span>
-              <h2>도시 운영관 · A</h2>
-            </div>
-            <div className={styles.aiCommandPanel}>
-              <div className={styles.aiChatLog} role="log" aria-live="polite" ref={commandLogRef}>
-                {commandMessages.map(message => (
-                  <div
-                    key={message.id}
-                    className={`${styles.aiMessage} ${message.role === 'user' ? styles.aiMessageUser : styles.aiMessageAssistant} ${message.isError ? styles.aiMessageError : ''}`}
-                  >
-                    <small>{message.role === 'user' ? '나' : 'AI 운영관'}</small>
-                    <p>{message.text}</p>
-                  </div>
-                ))}
-                {commandBusy && (
-                  <div className={`${styles.aiMessage} ${styles.aiMessageAssistant} ${styles.aiMessagePending}`}>
-                    <small>AI 운영관</small>
-                    <p><i /> 명령을 검토하고 있습니다.</p>
-                  </div>
-                )}
-              </div>
-              {commandExamples.length > 0 && (
+        <section className={styles.controlSection} ref={commandSectionRef}>
+          <div className={styles.sectionHeading}>
+            <span>AI</span>
+            <h2>도시 운영관 · A</h2>
+          </div>
+          <div className={styles.aiCommandPanel}>
+            <div className={styles.aiChatLog} role="log" aria-live="polite" ref={commandLogRef}>
+              {commandMessages.map(message => (
                 <div
-                  className={styles.aiCommandExamples}
-                  role="region"
-                  tabIndex={0}
-                  aria-label="도시 운영 명령 예시, 좌우로 스크롤 가능"
+                  key={message.id}
+                  className={`${styles.aiMessage} ${message.role === 'user' ? styles.aiMessageUser : styles.aiMessageAssistant} ${message.isError ? styles.aiMessageError : ''}`}
                 >
-                  {commandExamples.map(example => (
-                    <button
-                      key={example}
-                      type="button"
-                      onClick={() => setCommandInput(example)}
-                      disabled={busy || commandBusy || isGameOver}
-                    >
-                      {example}
-                    </button>
-                  ))}
+                  <small>{message.role === 'user' ? '나' : 'AI 운영관'}</small>
+                  <p>{message.text}</p>
+                </div>
+              ))}
+              {commandBusy && (
+                <div className={`${styles.aiMessage} ${styles.aiMessageAssistant} ${styles.aiMessagePending}`}>
+                  <small>AI 운영관</small>
+                  <p><i /> 명령을 검토하고 있습니다.</p>
                 </div>
               )}
-              <form
-                className={styles.aiCommandForm}
-                onSubmit={event => {
+            </div>
+            {commandExamples.length > 0 && (
+              <div
+                className={styles.aiCommandExamples}
+                role="region"
+                tabIndex={0}
+                aria-label="도시 운영 명령 예시, 좌우로 스크롤 가능"
+              >
+                {commandExamples.map(example => (
+                  <button
+                    key={example}
+                    type="button"
+                    onClick={() => setCommandInput(example)}
+                    disabled={busy || commandBusy || isGameOver}
+                  >
+                    {example}
+                  </button>
+                ))}
+              </div>
+            )}
+            <form
+              className={styles.aiCommandForm}
+              onSubmit={event => {
+                event.preventDefault()
+                void runCityCommand(commandInput)
+              }}
+            >
+              <textarea
+                ref={commandInputRef}
+                value={commandInput}
+                onChange={event => setCommandInput(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key !== 'Enter' || event.shiftKey) return
                   event.preventDefault()
                   void runCityCommand(commandInput)
                 }}
-              >
-                <textarea
-                  ref={commandInputRef}
-                  value={commandInput}
-                  onChange={event => setCommandInput(event.target.value)}
-                  onKeyDown={event => {
-                    if (event.key !== 'Enter' || event.shiftKey) return
-                    event.preventDefault()
-                    void runCityCommand(commandInput)
-                  }}
-                  placeholder="예: 1호선을 시청역 방향으로 연장하고 차량 한 대 더 사줘."
-                  maxLength={300}
-                  rows={2}
-                  disabled={busy || commandBusy || isGameOver}
-                  aria-label="AI 도시 운영 명령"
-                />
-                <button type="submit" disabled={busy || commandBusy || isGameOver || !commandInput.trim()}>
-                  {commandBusy ? '실행 중' : '명령 실행'}
-                </button>
-              </form>
-            </div>
-          </section>
-        )}
+                placeholder="예: 1호선을 시청역 방향으로 연장하고 차량 한 대 더 사줘."
+                maxLength={300}
+                rows={2}
+                disabled={busy || commandBusy || isGameOver}
+                aria-label="AI 도시 운영 명령"
+              />
+              <button type="submit" disabled={busy || commandBusy || isGameOver || !commandInput.trim()}>
+                {commandBusy ? '실행 중' : '명령 실행'}
+              </button>
+            </form>
+          </div>
+        </section>
 
         <section className={styles.controlSection} ref={linesSectionRef}>
           <div className={styles.sectionHeading}><span>01</span><h2>운영 노선 · F</h2></div>
