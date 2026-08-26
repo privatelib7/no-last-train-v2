@@ -926,6 +926,10 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin, onOp
           stationStats: [...base.stationStats, { stationId: station.id, waitingCount: 0, congestion: 0 }],
         }
         setState(patched)
+        setLiveEconomy(prev => ({
+          cashBalance: (prev?.cashBalance ?? base.city.cashBalance) - cost,
+          totalRevenue: prev?.totalRevenue ?? base.city.totalRevenue,
+        }))
         void loadCity()
         return patched
       }
@@ -940,6 +944,10 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin, onOp
             ...base,
             city: { ...base.city, lines: [...base.city.lines, line], cashBalance: base.city.cashBalance - cost },
           })
+          setLiveEconomy(prev => ({
+            cashBalance: (prev?.cashBalance ?? base.city.cashBalance) - cost,
+            totalRevenue: prev?.totalRevenue ?? base.city.totalRevenue,
+          }))
         }
       }
       const next = await loadCity()

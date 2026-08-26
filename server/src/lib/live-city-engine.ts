@@ -94,6 +94,15 @@ export type LiveCityEngine = {
   /** 다음 경제 틱까지 누적된 실시간(ms) */
   economyClockAccumMs: number
   cashBalance: number
+  /**
+   * 이 엔진이 마지막으로 DB에서 읽거나 DB에 쓴 cashBalance. 역/노선 건설 같은 액션은
+   * 별 프로세스(actions/route.ts)가 DB에 직접 비용을 차감한다 — 엔진에 알려주는 채널이
+   * 없다. refreshLiveEngineTopology가 매 주기 DB의 cashBalance를 이 값과 비교해
+   * «엔진이 모르는 사이에 바뀐 만큼»(외부 차감)만 골라 engine.cashBalance에 더해준다.
+   * 그래야 화면(엔진 메모리 기반 liveCashBalance)에 건설비가 바로 반영되고, 다음
+   * flush가 그 차감분을 없던 일로 덮어쓰지 않는다.
+   */
+  lastFlushedCashBalance: number
   totalRevenue: number
   revenueGoal: number
   happiness: number
@@ -223,6 +232,7 @@ export async function createLiveCityEngine(cityId: string): Promise<LiveCityEngi
       lastFrameAtMs: now,
       economyClockAccumMs: 0,
       cashBalance: city.cashBalance,
+      lastFlushedCashBalance: city.cashBalance,
       totalRevenue: city.totalRevenue,
       revenueGoal: city.revenueGoal,
       happiness: city.happiness,
@@ -246,6 +256,13 @@ export async function createLiveCityEngine(cityId: string): Promise<LiveCityEngi
     }
     return engine
   })
+}
+
+function absorbExternalCash(engine: LiveCityEngine, dbCash: number): void {
+  const externalDelta = dbCash - engine.lastFlushedCashBalance
+  if (externalDelta === 0) return
+  engine.cashBalance += externalDelta
+  engine.lastFlushedCashBalance = dbCash
 }
 
 /**
@@ -279,6 +296,7 @@ export async function refreshLiveEngineTopology(engine: LiveCityEngine): Promise
     })
     if (!city) return
 
+    absorbExternalCash(engine, city.cashBalance)
     engine.stations = city.stations
 
     const existingLinesById = new Map(engine.lines.map(l => [l.id, l]))
@@ -642,12 +660,21 @@ async function flushToDb(engine: LiveCityEngine): Promise<void> {
     ))
   }
 
+  // db.city.update보다 먼저 외부(공사비) 차감을 흡수한다. 안 그러면 엔진 메모리
+  // 잔고가 API가 방금 깎은 DB 값을 덮어 공사비가 되살아난다.
+  const cityCash = await db.city.findUnique({
+    where: { id: engine.cityId },
+    select: { cashBalance: true },
+  })
+  if (cityCash) absorbExternalCash(engine, cityCash.cashBalance)
+
+  const flushedCashBalance = engine.cashBalance
   await db.city.update({
     where: { id: engine.cityId },
     data: {
       currentTick: engine.currentTick,
       lastTickAt: new Date(engine.lastTickAtMs),
-      cashBalance: engine.cashBalance,
+      cashBalance: flushedCashBalance,
       totalRevenue: engine.totalRevenue,
       revenueGoal: engine.revenueGoal,
       happiness: engine.happiness,
@@ -659,6 +686,7 @@ async function flushToDb(engine: LiveCityEngine): Promise<void> {
       gameOverReason: engine.gameOverReason,
     },
   })
+  engine.lastFlushedCashBalance = flushedCashBalance
   if (engine.gameOver) engine.status = 'GAME_OVER'
 }
 
