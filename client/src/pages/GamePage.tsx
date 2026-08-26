@@ -97,6 +97,9 @@ const CURSOR_HEARTBEAT_MS = 2000
 const CURSOR_MOVE_THRESHOLD = 0.35
 // 서버 cursor-presence.ts 의 CURSOR_COLORS 와 동일한 팔레트 (본인 아바타 색 계산용)
 const PRESENCE_COLORS = ['#ff6f91', '#4fc9a8', '#5b8cf2', '#ffb648', '#a77dfb', '#3ecbd0', '#f4886b'] as const
+// 건설 직후 낙관적으로 깎은 잔고를, 라이브 엔진이 DB 차감을 따라잡을 때까지(최대 400ms
+// 주기) 모션 스냅샷이 되돌리지 못하게 막아두는 여유시간
+const MOTION_CASH_SUPPRESS_MS = 600
 // 차량이 승차로 번 돈을 옆에 잠깐 띄워 보여주는 연출 지속 시간·떠오르는 높이
 // 서버 actions 라우트의 MAX_VEHICLES_PER_LINE 과 같아야 한다
 const MAX_VEHICLES_PER_LINE = 8
@@ -267,6 +270,16 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin, onOp
   const suppressMapClick = useRef(false)
   const mapRef = useRef<SVGSVGElement | null>(null)
   const stateRef = useRef<CityState | null>(null)
+  /**
+   * 건설 직후 낙관적으로 깎은 운영자금(liveEconomy.cashBalance)을, 그 시점까지의 모션
+   * 스냅샷이 되돌리지 못하게 막는 마감시각(ms). 라이브 엔진은 actions 라우트가 DB에
+   * 바로 깎은 공사비를 최대 400ms 주기(refreshLiveEngineTopology)로만 따라잡는다 —
+   * 그 사이에 도착하는 모션 push는 여전히 옛(공사 전) 잔고를 들고 있어서, 낙관적으로
+   * 800→400으로 보여준 직후 그 스냅샷이 다시 800으로 덮어썼다가 엔진이 따라잡으면
+   * 또 400으로 — 값이 튀는 것처럼 보였다. 이 마감시각 전까지는 모션의 cashBalance를
+   * 무시하고 우리가 이미 보여준 값을 지킨다(매출은 별개라 계속 반영한다).
+   */
+  const suppressMotionCashUntilRef = useRef(0)
   /** 파산·행복도 유예 카운트다운의 "마지막으로 서버가 확인해준 시점" 기준점 — 아래 참고 */
   const graceBaselineRef = useRef<{ ticksRemaining: number; atContinuousTick: number } | null>(null)
   const performActionRef = useRef<((action: CityAction) => Promise<CityState | null>) | null>(null)
@@ -566,11 +579,15 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin, onOp
         motionClockOffsetRef.current = next.serverNow - Date.now()
         motionRef.current = next
         if (next.liveCashBalance !== undefined && next.liveTotalRevenue !== undefined) {
-          const cashBalance = next.liveCashBalance
+          const motionCashBalance = next.liveCashBalance
           const totalRevenue = next.liveTotalRevenue
-          setLiveEconomy(prev => (prev && prev.cashBalance === cashBalance && prev.totalRevenue === totalRevenue)
-            ? prev
-            : { cashBalance, totalRevenue })
+          const suppressCash = Date.now() < suppressMotionCashUntilRef.current
+          setLiveEconomy(prev => {
+            const cashBalance = suppressCash && prev ? prev.cashBalance : motionCashBalance
+            return (prev && prev.cashBalance === cashBalance && prev.totalRevenue === totalRevenue)
+              ? prev
+              : { cashBalance, totalRevenue }
+          })
         } else {
           setLiveEconomy(prev => (prev === null ? prev : null))
         }
@@ -926,6 +943,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin, onOp
           stationStats: [...base.stationStats, { stationId: station.id, waitingCount: 0, congestion: 0 }],
         }
         setState(patched)
+        suppressMotionCashUntilRef.current = Date.now() + MOTION_CASH_SUPPRESS_MS
         setLiveEconomy(prev => ({
           cashBalance: (prev?.cashBalance ?? base.city.cashBalance) - cost,
           totalRevenue: prev?.totalRevenue ?? base.city.totalRevenue,
@@ -944,6 +962,7 @@ export default function GamePage({ cityId, session, onBack, onRequireLogin, onOp
             ...base,
             city: { ...base.city, lines: [...base.city.lines, line], cashBalance: base.city.cashBalance - cost },
           })
+          suppressMotionCashUntilRef.current = Date.now() + MOTION_CASH_SUPPRESS_MS
           setLiveEconomy(prev => ({
             cashBalance: (prev?.cashBalance ?? base.city.cashBalance) - cost,
             totalRevenue: prev?.totalRevenue ?? base.city.totalRevenue,
