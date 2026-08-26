@@ -1,10 +1,11 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import styles from './SettingsPage.module.css'
 import LicensesPage from './LicensesPage'
 import { unlockBgm } from '../lib/bgm'
 import { applyTheme, loadSettings, saveSettings, type GameSettings } from '../lib/settings'
 import { playGoalUnlockSfx } from '../lib/sfx'
 import {
+  enableNotificationPreferenceIfBrowserGranted,
   getChromeNotificationStatus,
   requestChromeNotificationPermission,
   type ChromeNotificationStatus,
@@ -22,6 +23,19 @@ export default function SettingsPage({ onBack }: Props) {
     () => getChromeNotificationStatus(),
   )
   const sfxPreviewTimer = useRef<number | null>(null)
+
+  useEffect(() => {
+    enableNotificationPreferenceIfBrowserGranted()
+    setNotificationStatus(getChromeNotificationStatus())
+    setSettings(loadSettings())
+    const onSettings = (event: Event) => {
+      const next = (event as CustomEvent<GameSettings>).detail
+      if (next) setSettings(next)
+      setNotificationStatus(getChromeNotificationStatus())
+    }
+    window.addEventListener('nlt:settings', onSettings)
+    return () => window.removeEventListener('nlt:settings', onSettings)
+  }, [])
 
   const previewSfx = () => {
     if (sfxPreviewTimer.current != null) window.clearTimeout(sfxPreviewTimer.current)
@@ -151,12 +165,12 @@ export default function SettingsPage({ onBack }: Props) {
 
           <label className={styles.row}>
             <span className={styles.rowLabel}>
-              <span className={styles.rowTitle}>크롬 알림</span>
+              <span className={styles.rowTitle}>알림</span>
               <span className={styles.rowHint}>
                 {notificationStatus === 'unsupported'
                   ? '이 브라우저에서는 알림을 지원하지 않아요.'
                   : notificationStatus === 'denied'
-                    ? 'Chrome 사이트 설정에서 알림 권한을 허용해주세요.'
+                    ? '사이트 설정에서 알림 권한을 허용해주세요.'
                     : '목표 달성, 게임 오버 위험, 게임 오버, 동료 접속을 알려드려요.'}
               </span>
             </span>
@@ -166,7 +180,7 @@ export default function SettingsPage({ onBack }: Props) {
                 checked={settings.notificationsEnabled && notificationStatus === 'granted'}
                 disabled={notificationStatus === 'unsupported' || notificationStatus === 'denied'}
                 onChange={(e) => { void toggleNotifications(e.target.checked) }}
-                aria-label="크롬 알림 켜기/끄기"
+                aria-label="알림 켜기/끄기"
               />
               <span className={styles.switchTrack} />
             </span>
