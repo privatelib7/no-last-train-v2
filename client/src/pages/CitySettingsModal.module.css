@@ -198,6 +198,23 @@
   flex-shrink: 0;
 }
 
+.moreSettingsBtn {
+  width: 100%;
+  padding: 11px 16px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 700;
+  margin-bottom: 10px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.moreSettingsBtn:hover {
+  background: var(--bg-sidebar);
+}
+
 .dangerBtn {
   flex: 1;
   padding: 11px 16px;

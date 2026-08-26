@@ -8,11 +8,16 @@ interface Props {
   cityId: string
   roomTitle: string
   playerToken: string
+  isOwner: boolean
   onClose: () => void
   onDeleted: () => void
+  /** 알림·화면·소리 등 앱 전역 설정 화면으로 이동 — 메인화면 쪽 SettingsPage를 그대로 재사용한다 */
+  onOpenMoreSettings: () => void
 }
 
-export default function CitySettingsModal({ cityId, roomTitle, playerToken, onClose, onDeleted }: Props) {
+export default function CitySettingsModal({
+  cityId, roomTitle, playerToken, isOwner, onClose, onDeleted, onOpenMoreSettings,
+}: Props) {
   const [step, setStep] = useState<'menu' | 'confirmName'>('menu')
   const [nameInput, setNameInput] = useState('')
   const [showConfirmPopup, setShowConfirmPopup] = useState(false)
@@ -93,12 +98,21 @@ export default function CitySettingsModal({ cityId, roomTitle, playerToken, onCl
               </div>
             </div>
             <button
-              className={styles.dangerBtn}
+              className={styles.moreSettingsBtn}
               type="button"
-              onClick={() => setStep('confirmName')}
+              onClick={onOpenMoreSettings}
             >
-              관제실 삭제
+              설정 더보기 (알림 · 화면 · 소리)
             </button>
+            {isOwner && (
+              <button
+                className={styles.dangerBtn}
+                type="button"
+                onClick={() => setStep('confirmName')}
+              >
+                관제실 삭제
+              </button>
+            )}
           </>
         )}
 
