@@ -41,6 +41,7 @@ import {
 } from '../src/lib/live-city-engine'
 import { getRedisSubscriberClient } from '../src/lib/redis-client'
 import { buildCityStateSnapshot } from '../src/lib/city-state'
+import { upsertCursor, removeCursor, listOtherCursors, getCursor, pruneAndListRemoved } from '../src/lib/cursor-presence'
 import { SIM } from '../src/types/game'
 
 const PORT = Number(process.env.REALTIME_PORT ?? 3012)
@@ -52,11 +53,14 @@ const CITY_INTERVAL_MS = 2500
 const HEARTBEAT_INTERVAL_MS = SIM.LIVE_TICK_MS
 const WS_CATCHUP_MAX_TICKS = 20
 const SYNC_CONCURRENCY = 4
+/** 클라이언트 하트비트(2초)보다 넉넉히 자주 돌아 TTL(cursor-presence.ts, 5초)을 넘긴
+ *  방치된 커서를 청소한다 — WS는 이벤트 기반이라 아무도 안 움직이면 저절로 안 지워진다. */
+const CURSOR_PRUNE_MS = 2000
 
 /** 라이브 엔진 경제 틱(승객 생성/정책/SimTick 기록 + DB flush) 주기 — 기존 "경제 틱" 주기와 동일 */
 const ECONOMIC_TICK_MS = SIM.LIVE_TICK_MS
 
-type ConnState = { cityId: string | null; playerId: string | null }
+type ConnState = { cityId: string | null; playerId: string | null; nickname: string | null }
 
 const connState = new Map<WebSocket, ConnState>()
 const citySubscribers = new Map<string, Set<WebSocket>>()
@@ -100,22 +104,38 @@ function subscribersFor(cityId: string): Set<WebSocket> {
   return set
 }
 
-function unsubscribe(ws: WebSocket) {
-  const state = connState.get(ws)
-  if (!state?.cityId) return
-  const set = citySubscribers.get(state.cityId)
-  set?.delete(ws)
-  if (set && set.size === 0) {
-    citySubscribers.delete(state.cityId)
-    invalidateCityMotionCache(state.cityId)
-    void teardownLiveEngine(state.cityId)
-  }
-  state.cityId = null
-}
-
 function send(ws: WebSocket, message: unknown) {
   if (ws.readyState !== WebSocket.OPEN) return
   ws.send(JSON.stringify(message))
+}
+
+/** 같은 방(cityId) 구독자 전원에게, excludeWs가 있으면 그 소켓만 빼고 보낸다 */
+function broadcastToCity(cityId: string, message: unknown, excludeWs?: WebSocket) {
+  const sockets = citySubscribers.get(cityId)
+  if (!sockets) return
+  for (const ws of sockets) {
+    if (ws === excludeWs) continue
+    send(ws, message)
+  }
+}
+
+function unsubscribe(ws: WebSocket) {
+  const state = connState.get(ws)
+  if (!state?.cityId) return
+  const { cityId, playerId } = state
+  const set = citySubscribers.get(cityId)
+  set?.delete(ws)
+  if (set && set.size === 0) {
+    citySubscribers.delete(cityId)
+    invalidateCityMotionCache(cityId)
+    void teardownLiveEngine(cityId)
+  }
+  state.cityId = null
+  // 커서도 같이 정리한다 — 안 그러면 나간 사람 커서가 다른 사람 화면에 얼어붙은 채 남는다.
+  if (playerId) {
+    removeCursor(cityId, playerId)
+    broadcastToCity(cityId, { type: 'cursor-leave', payload: { playerId } })
+  }
 }
 
 function subscribedCityIds(): string[] {
@@ -285,7 +305,7 @@ const httpServer = createServer((req, res) => {
 const wss = new WebSocketServer({ server: httpServer, path: '/ws' })
 
 wss.on('connection', ws => {
-  connState.set(ws, { cityId: null, playerId: null })
+  connState.set(ws, { cityId: null, playerId: null, nickname: null })
 
   ws.on('message', async raw => {
     let msg: unknown
@@ -314,16 +334,36 @@ wss.on('connection', ws => {
         return
       }
       unsubscribe(ws)
-      connState.set(ws, { cityId, playerId: player.id })
+      const nickname = player.nickname ?? player.username ?? '플레이어'
+      connState.set(ws, { cityId, playerId: player.id, nickname })
       subscribersFor(cityId).add(ws)
       void sendMotionTo(ws, cityId)
       void sendCityStateTo(ws, cityId, player.id)
       void ensureLiveEngine(cityId)
+      // 이미 그 방에 있던 사람들의 커서를 한 번에 보내준다 — 각각을 "방금 접속"으로
+      // 잘못 알리지 않도록, 개별 브로드캐스트(type: 'cursor')와 메시지 타입을 분리한다.
+      send(ws, { type: 'cursor-init', payload: listOtherCursors(cityId, player.id) })
       return
     }
 
     if (type === 'unsubscribe') {
       unsubscribe(ws)
+      return
+    }
+
+    if (type === 'cursor') {
+      const state = connState.get(ws)
+      if (!state?.cityId || !state.playerId) return
+      const { x, y } = msg as { x?: unknown; y?: unknown }
+      if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) return
+      const clampedX = Math.max(0, Math.min(100, x))
+      const clampedY = Math.max(0, Math.min(100, y))
+      const nickname = state.nickname ?? '플레이어'
+      upsertCursor(state.cityId, state.playerId, nickname, clampedX, clampedY)
+      const snapshot = getCursor(state.cityId, state.playerId)
+      // 타이머 없이, 받은 즉시 같은 방 나머지 구독자에게만 전달한다(보낸 사람 제외).
+      if (snapshot) broadcastToCity(state.cityId, { type: 'cursor', payload: snapshot }, ws)
+      return
     }
   })
 
@@ -366,6 +406,16 @@ setInterval(() => {
     .catch(err => console.error('[realtime] broadcastCityState failed', err))
     .finally(() => { cityRunning = false })
 }, CITY_INTERVAL_MS)
+
+// 커서는 이벤트 기반(받은 즉시 전달)이라 이 타이머가 그 자체를 대체하지 않는다 —
+// 오직 하트비트가 끊긴(탭 강제종료 등 close 이벤트 없이 사라진) 방치 커서만 청소한다.
+setInterval(() => {
+  for (const cityId of subscribedCityIds()) {
+    for (const playerId of pruneAndListRemoved(cityId)) {
+      broadcastToCity(cityId, { type: 'cursor-leave', payload: { playerId } })
+    }
+  }
+}, CURSOR_PRUNE_MS)
 
 /**
  * 라이브 엔진의 "경제 틱" — 승객 생성/정책 평가/SimTick 기록 + 누적된 차량·승객·잔고
