@@ -24,6 +24,7 @@ import {
   advanceVehicleMotion,
   expressStopStationIds,
   headwayHoldFactors,
+  reconcileVehicleForTopologyChange,
   stationDwellMinutes,
   type MotionStation,
 } from './vehicle-motion'
@@ -94,6 +95,15 @@ export type LiveCityEngine = {
   /** 다음 경제 틱까지 누적된 실시간(ms) */
   economyClockAccumMs: number
   cashBalance: number
+  /**
+   * 이 엔진이 마지막으로 DB에서 읽거나 DB에 쓴 cashBalance. 역/노선 건설 같은 액션은
+   * 별 프로세스(actions/route.ts)가 DB에 직접 비용을 차감한다 — 엔진에 알려주는 채널이
+   * 없다. refreshLiveEngineTopology가 매 주기 DB의 cashBalance를 이 값과 비교해
+   * «엔진이 모르는 사이에 바뀐 만큼»(외부 차감)만 골라 engine.cashBalance에 더해준다.
+   * 그래야 화면(엔진 메모리 기반 liveCashBalance)에 건설비가 바로 반영되고, 다음
+   * flush가 그 차감분을 없던 일로 덮어쓰지 않는다.
+   */
+  lastFlushedCashBalance: number
   totalRevenue: number
   revenueGoal: number
   happiness: number
@@ -223,6 +233,7 @@ export async function createLiveCityEngine(cityId: string): Promise<LiveCityEngi
       lastFrameAtMs: now,
       economyClockAccumMs: 0,
       cashBalance: city.cashBalance,
+      lastFlushedCashBalance: city.cashBalance,
       totalRevenue: city.totalRevenue,
       revenueGoal: city.revenueGoal,
       happiness: city.happiness,
@@ -279,6 +290,19 @@ export async function refreshLiveEngineTopology(engine: LiveCityEngine): Promise
     })
     if (!city) return
 
+    // 역/노선 건설 같은 «비용 차감»은 actions/route.ts가 별 프로세스에서 DB에 직접
+    // 차감한다 — 엔진에 알려주는 채널이 없다. 여기서 DB cashBalance를 이 엔진이 마지막
+    // 으로 알던 값(lastFlushedCashBalance)과 비교해 «엔진이 모르는 사이에 바뀐 만큼»만
+    // 골라 engine.cashBalance에 더한다. 그래야 화면(엔진 메모리 기반 liveCashBalance)에
+    // 건설비가 이 주기(400ms) 안에 반영되고, 다음 economic-tick flush가 그 차감을
+    // 없던 일로 덮어쓰지 않는다. 엔진 자신의 flush로 생긴 차이는 flushToDb가 그때그때
+    // lastFlushedCashBalance를 같이 갱신해 두므로 여기서 다시 잡히지 않는다.
+    const externalCashDelta = city.cashBalance - engine.lastFlushedCashBalance
+    if (externalCashDelta !== 0) {
+      engine.cashBalance += externalCashDelta
+      engine.lastFlushedCashBalance = city.cashBalance
+    }
+
     engine.stations = city.stations
 
     const existingLinesById = new Map(engine.lines.map(l => [l.id, l]))
@@ -305,7 +329,31 @@ export async function refreshLiveEngineTopology(engine: LiveCityEngine): Promise
 
         const serviceChanged = engineVehicle.status !== dbVehicle.status
           || engineVehicle.isSpare !== dbVehicle.isSpare
-        if (topologyChanged || serviceChanged) return dbVehicle
+        if (serviceChanged) return dbVehicle
+
+        // topologyChanged는 노선 전체 기준이라, 이 차량이 지금 지나는 «구간»과 무관한
+        // 편집(반대쪽 종점 연장, 딴 데 역 삽입/제거)까지 뭉뚱그려 DB로 되돌리면 그 자리에서
+        // 몇 틱치 뒤로 튕겨 보인다(DB는 주기적으로만 flush되어 엔진보다 살짝 뒤처진다) —
+        // 강남으로 가던 차가 순간이동한 것처럼 보이는 원인이 이거였다. reconcileVehicleForTopologyChange가
+        // «이 차량 구간이 이번 편집과 무관한지»(무관하면 엔진의 실시간 좌표를 그대로 쓰되,
+        // 종점이 밀려 더는 종점이 아니게 됐으면 방향만 바로잡는다)를 판단하고, 진짜
+        // 이 구간에 역이 끼거나 빠진 경우(INSERT_STATION 등, 액션 라우트가 이미
+        // reconcileVehicleForInsertedStation으로 보정해 둔 경우)에만 null을 돌려줘 DB 값을 쓰게 한다.
+        if (topologyChanged) {
+          if (!engineVehicle.currentStationId) return dbVehicle
+          const reconciled = reconcileVehicleForTopologyChange(
+            existing.stations,
+            dbStations,
+            {
+              currentStationId: engineVehicle.currentStationId,
+              direction: engineVehicle.direction,
+              segmentProgressMinutes: engineVehicle.segmentProgressMinutes,
+            },
+            dbLine.mode,
+          )
+          if (!reconciled) return dbVehicle
+          return { ...dbVehicle, ...reconciled }
+        }
 
         // 그 외엔 엔진이 이미 갖고 있는(최대 ~400ms 이내) 더 최신 위치를 지키고,
         // 정원 등 엔진이 직접 건드리지 않는 필드만 DB 최신값으로 맞춘다.
@@ -642,12 +690,16 @@ async function flushToDb(engine: LiveCityEngine): Promise<void> {
     ))
   }
 
+  // db.city.update보다 먼저 값을 굳혀 둔다 — await 도중 다른 economic tick이 끼어들
+  // 여지는 runCitySimulationExclusive가 막아 주지만, 그래도 "방금 실제로 쓴 값"과
+  // lastFlushedCashBalance가 어긋날 여지를 아예 없앤다.
+  const flushedCashBalance = engine.cashBalance
   await db.city.update({
     where: { id: engine.cityId },
     data: {
       currentTick: engine.currentTick,
       lastTickAt: new Date(engine.lastTickAtMs),
-      cashBalance: engine.cashBalance,
+      cashBalance: flushedCashBalance,
       totalRevenue: engine.totalRevenue,
       revenueGoal: engine.revenueGoal,
       happiness: engine.happiness,
@@ -659,6 +711,7 @@ async function flushToDb(engine: LiveCityEngine): Promise<void> {
       gameOverReason: engine.gameOverReason,
     },
   })
+  engine.lastFlushedCashBalance = flushedCashBalance
   if (engine.gameOver) engine.status = 'GAME_OVER'
 }
 
