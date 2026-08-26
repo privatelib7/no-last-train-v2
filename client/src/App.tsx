@@ -9,6 +9,7 @@ import SettingsPage from './pages/SettingsPage'
 import LobbyPage from './pages/LobbyPage'
 import GamePage from './pages/GamePage'
 import { fetchMe, type AuthSession } from './api/auth'
+import { watchBrowserNotificationPermission } from './lib/notifications'
 import './App.css'
 
 type Page = 'title' | 'login' | 'register' | 'verify' | 'forgot' | 'reset' | 'settings' | 'lobby' | 'game'
@@ -63,8 +64,8 @@ export default function App() {
     if (readResetToken()) return 'reset'
     return readCityIdFromUrl() ? 'game' : 'title'
   })
-  // 설정 화면에서 닫기를 눌렀을 때 타이틀/로비 중 어디서 열었는지로 되돌아가기 위해 기억해둔다.
-  const [settingsReturnPage, setSettingsReturnPage] = useState<'title' | 'lobby'>('title')
+  // 설정 화면에서 닫기를 눌렀을 때 타이틀/로비/관제실 중 어디서 열었는지로 되돌아가기 위해 기억해둔다.
+  const [settingsReturnPage, setSettingsReturnPage] = useState<'title' | 'lobby' | 'game'>('title')
   const applyNavState = (next: NavState) => {
     if (next.page === 'game') {
       window.localStorage.setItem(ACTIVE_CITY_KEY, next.cityId)
@@ -134,6 +135,8 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => watchBrowserNotificationPermission(), [])
+
   const handleAuthed = (next: AuthSession) => {
     window.localStorage.setItem(SESSION_KEY, JSON.stringify(next))
     setSession(next)
@@ -181,7 +184,6 @@ export default function App() {
           }}
         />
       )}
-      {page === 'settings' && <SettingsPage onBack={() => setPage(settingsReturnPage)} />}
       {page === 'verify' && verifyToken && (
         <VerifyEmailPage token={verifyToken} onGoLogin={goLoginFromVerify} />
       )}
@@ -214,13 +216,47 @@ export default function App() {
           }}
         />
       )}
-      {page === 'game' && activeCityId && (
-        <GamePage
-          cityId={activeCityId}
-          session={session}
-          onBack={leaveCity}
-          onRequireLogin={() => setPage('login')}
-        />
+      {activeCityId && (page === 'game' || (page === 'settings' && settingsReturnPage === 'game')) && (
+        // 관제실에서 메인 설정으로 갈 때 GamePage를 내리지 않는다. 내려면 돌아와
+        // 도시·모션을 다시 받아 로딩 화면이 뜬다. 숨기기만 해서 상태를 유지한다.
+        <div
+          inert={page !== 'game' ? true : undefined}
+          aria-hidden={page !== 'game'}
+          style={
+            page === 'game'
+              ? { width: '100%', height: '100%' }
+              : {
+                  width: '100%',
+                  height: '100%',
+                  visibility: 'hidden',
+                  position: 'fixed',
+                  inset: 0,
+                  pointerEvents: 'none',
+                }
+          }
+        >
+          <GamePage
+            cityId={activeCityId}
+            session={session}
+            onBack={leaveCity}
+            onRequireLogin={() => setPage('login')}
+            onOpenSettings={() => {
+              setSettingsReturnPage('game')
+              setPage('settings')
+            }}
+          />
+        </div>
+      )}
+      {page === 'settings' && (
+        <div
+          style={
+            settingsReturnPage === 'game'
+              ? { position: 'fixed', inset: 0, zIndex: 20, overflow: 'auto' }
+              : undefined
+          }
+        >
+          <SettingsPage onBack={() => setPage(settingsReturnPage)} />
+        </div>
       )}
     </>
   )
