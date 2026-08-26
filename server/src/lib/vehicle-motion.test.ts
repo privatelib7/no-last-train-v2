@@ -5,6 +5,7 @@ import {
   headwayHoldFactors,
   expressStopStationIds,
   reconcileVehicleForInsertedStation,
+  reconcileVehicleForTopologyChange,
   segmentTravelMinutes,
   stationDwellMinutes,
   type MotionStation,
@@ -208,6 +209,63 @@ test('정차 중이거나 다른 구간을 지나는 차량은 삽입에 영향�
     'SUBWAY',
   )
   assert.equal(unrelatedSegment, null)
+})
+
+// 종점 연장(BUILD_SEGMENT) 시나리오 — a-b-c 노선의 종점 c 뒤에 d를 붙인다.
+// 중간 삽입과 달리 기존 구간 길이는 하나도 안 바뀌므로 좌표는 절대 안 변해야 하고,
+// c에서 되돌아가던 차만 이제 d로 이어지도록 방향이 바로잡혀야 한다.
+const extendedAtTail: MotionStation[] = [...stations, { id: 'd', posX: 50, posY: 0 }]
+
+test('종점 연장: B→C로 가던 중이면 좌표·진행분이 그대로고, 목적지는 도착 전까지 C다', () => {
+  const reconciled = reconcileVehicleForTopologyChange(
+    stations,
+    extendedAtTail,
+    { currentStationId: 'b', direction: 1, segmentProgressMinutes: 5 },
+    'SUBWAY',
+  )
+  assert.ok(reconciled)
+  assert.equal(reconciled.currentStationId, 'b')
+  assert.equal(reconciled.direction, 1)
+  assert.equal(reconciled.segmentProgressMinutes, 5) // 좌표·진행분 그대로
+
+  const after = advanceVehicleMotion(extendedAtTail, reconciled, 0, 'SUBWAY')
+  assert.equal(after.nextStationId, 'c') // d로 건너뛰지 않고 여전히 c가 다음 목적지
+})
+
+test('종점 연장: C에 정차 중이던 차는 그 자리에서 진행분 0부터 D로 출발하고, B로 되돌아가지 않는다', () => {
+  // c는 원래 종점이라 도착 즉시 «다음엔 b로»(direction=-1)가 이미 박혀 있는 상태.
+  const dwellingAtOldTerminus = { currentStationId: 'c', direction: -1, segmentProgressMinutes: -1 }
+
+  const reconciled = reconcileVehicleForTopologyChange(stations, extendedAtTail, dwellingAtOldTerminus, 'SUBWAY')
+  assert.ok(reconciled)
+  assert.equal(reconciled.currentStationId, 'c') // 좌표(=x30) 그대로, d로 스냅되지 않는다
+  assert.equal(reconciled.direction, 1) // b로 되돌아가지 않고 d 쪽으로 바로잡힌다
+  assert.equal(reconciled.segmentProgressMinutes, -1) // 정차 중이었다는 사실도 그대로
+
+  // 정차가 끝나고(1분 남음) 조금 더 흘러 실제로 출발하면 d로 향하지, b로 향하지 않는다.
+  const departed = advanceVehicleMotion(extendedAtTail, reconciled, 1.5, 'SUBWAY')
+  assert.equal(departed.currentStationId, 'c')
+  assert.equal(departed.nextStationId, 'd')
+  assert.equal(departed.direction, 1)
+  assert.ok(departed.x! > 30, 'c(x=30)에서 d 쪽으로 전진해야 한다') // b(x=10) 쪽으로 튕기지 않았는지 확인
+})
+
+test('종점 연장: 이미 반대 방향으로 실제 출발한 차(진행분>0)는 되돌리지 않는다 — 그건 진짜 이동이라 되돌리면 그 자체가 점프다', () => {
+  const alreadyDeparting = { currentStationId: 'c', direction: -1, segmentProgressMinutes: 3 }
+  const reconciled = reconcileVehicleForTopologyChange(stations, extendedAtTail, alreadyDeparting, 'SUBWAY')
+  assert.ok(reconciled)
+  assert.equal(reconciled.direction, -1) // 그대로 b쪽으로 계속 간다
+  assert.equal(reconciled.segmentProgressMinutes, 3)
+})
+
+test('종점 연장으로도 못 고치는 진짜 구간 단절(중간 삽입)은 null을 돌려줘 DB의 reconcile 값을 쓰게 한다', () => {
+  const disrupted = reconcileVehicleForTopologyChange(
+    lineWithoutB, // [a, c]
+    stations, // [a, b, c] — b가 a-c 사이에 끼어들었다
+    { currentStationId: 'a', direction: 1, segmentProgressMinutes: 7 },
+    'SUBWAY',
+  )
+  assert.equal(disrupted, null)
 })
 const LINE: MotionStation[] = [
   { id: 'a', posX: 0, posY: 0 },

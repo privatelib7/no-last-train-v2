@@ -24,6 +24,7 @@ import {
   advanceVehicleMotion,
   expressStopStationIds,
   headwayHoldFactors,
+  reconcileVehicleForTopologyChange,
   stationDwellMinutes,
   type MotionStation,
 } from './vehicle-motion'
@@ -323,7 +324,31 @@ export async function refreshLiveEngineTopology(engine: LiveCityEngine): Promise
 
         const serviceChanged = engineVehicle.status !== dbVehicle.status
           || engineVehicle.isSpare !== dbVehicle.isSpare
-        if (topologyChanged || serviceChanged) return dbVehicle
+        if (serviceChanged) return dbVehicle
+
+        // topologyChanged는 노선 전체 기준이라, 이 차량이 지금 지나는 «구간»과 무관한
+        // 편집(반대쪽 종점 연장, 딴 데 역 삽입/제거)까지 뭉뚱그려 DB로 되돌리면 그 자리에서
+        // 몇 틱치 뒤로 튕겨 보인다(DB는 주기적으로만 flush되어 엔진보다 살짝 뒤처진다) —
+        // 강남으로 가던 차가 순간이동한 것처럼 보이는 원인이 이거였다. reconcileVehicleForTopologyChange가
+        // «이 차량 구간이 이번 편집과 무관한지»(무관하면 엔진의 실시간 좌표를 그대로 쓰되,
+        // 종점이 밀려 더는 종점이 아니게 됐으면 방향만 바로잡는다)를 판단하고, 진짜
+        // 이 구간에 역이 끼거나 빠진 경우(INSERT_STATION 등, 액션 라우트가 이미
+        // reconcileVehicleForInsertedStation으로 보정해 둔 경우)에만 null을 돌려줘 DB 값을 쓰게 한다.
+        if (topologyChanged) {
+          if (!engineVehicle.currentStationId) return dbVehicle
+          const reconciled = reconcileVehicleForTopologyChange(
+            existing.stations,
+            dbStations,
+            {
+              currentStationId: engineVehicle.currentStationId,
+              direction: engineVehicle.direction,
+              segmentProgressMinutes: engineVehicle.segmentProgressMinutes,
+            },
+            dbLine.mode,
+          )
+          if (!reconciled) return dbVehicle
+          return { ...dbVehicle, ...reconciled }
+        }
 
         // 그 외엔 엔진이 이미 갖고 있는(최대 ~400ms 이내) 더 최신 위치를 지키고,
         // 정원 등 엔진이 직접 건드리지 않는 필드만 DB 최신값으로 맞춘다.
@@ -661,7 +686,9 @@ async function flushToDb(engine: LiveCityEngine): Promise<void> {
   }
 
   // db.city.update보다 먼저 외부(공사비) 차감을 흡수한다. 안 그러면 엔진 메모리
-  // 잔고가 API가 방금 깎은 DB 값을 덮어 공사비가 되살아난다.
+  // 잔고가 API가 방금 깎은 DB 값을 덮어 공사비가 되살아난다. 그 뒤 곧바로 값을
+  // 굳혀 둔다 — await 도중 다른 economic tick이 끼어들 여지는 runCitySimulationExclusive가
+  // 막아 주지만, 그래도 "방금 실제로 쓴 값"과 lastFlushedCashBalance가 어긋날 여지를 없앤다.
   const cityCash = await db.city.findUnique({
     where: { id: engine.cityId },
     select: { cashBalance: true },

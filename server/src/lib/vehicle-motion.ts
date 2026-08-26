@@ -247,6 +247,52 @@ export function advanceVehicleMotion(
 }
 
 /**
+ * 노선 위상이 바뀐 뒤(연장·중간 삽입·제거), 이미 굴러가던 차량이 지금 물리적 위치를
+ * 그대로 지켜도 되는지 판단한다. currentStationId·segmentProgressMinutes는 절대 건드리지
+ * 않는다 — 그건 지금 서 있거나 달리고 있는 실제 좌표라 위상과 무관하다.
+ *
+ * 딱 하나, direction만 다시 볼 수 있다. advanceVehicleMotion은 종점(배열 끝)에 닿으면
+ * «다음엔 반대로 간다»를 도착 즉시(아직 정차 중이어도) direction에 박아 버린다. 그
+ * 종점 뒤로 노선이 연장돼 더는 종점이 아니게 됐는데 그 차가 아직 출발 전(정차 중이거나
+ * 막 도착해 진행분 0)이면, 원래 가던 방향으로 돌려놔야 «되돌아가지 않고 신설역으로
+ * 이어진다»는 왕복 규칙이 지켜진다. 이미 실제로 몇 분이라도 반대 방향으로 달리기
+ * 시작했으면(진행분 > 0) 손대지 않는다 — 그건 진짜 이동이라 되돌리면 그 자체가 점프다.
+ *
+ * 그 밖의 이유로 «지금 구간»(현재 역 다음이 어디인지)이 달라졌다면(=INSERT_STATION처럼
+ * 진짜 이 근방에 역이 끼거나 빠짐) 이 함수로는 못 고친다 — null을 돌려주니 호출자가
+ * 액션 라우트가 reconcileVehicleForInsertedStation으로 이미 보정해 둔 DB 값을 대신 써야 한다.
+ */
+export function reconcileVehicleForTopologyChange(
+  oldStations: MotionStation[],
+  newStations: MotionStation[],
+  state: VehicleMotionState,
+  mode: TransitMode,
+): VehicleMotionState | null {
+  if (!state.currentStationId) return null
+  const oldIndex = oldStations.findIndex(station => station.id === state.currentStationId)
+  const newIndex = newStations.findIndex(station => station.id === state.currentStationId)
+  if (oldIndex < 0 || newIndex < 0) return null
+
+  const storedDirection = state.direction >= 0 ? 1 : -1
+  const notYetDeparted = (state.segmentProgressMinutes || 0) <= 0
+  const wasForcedAtHead = notYetDeparted && oldIndex === 0 && storedDirection === 1 && newIndex !== 0
+  const wasForcedAtTail = notYetDeparted
+    && oldIndex === oldStations.length - 1
+    && storedDirection === -1
+    && newIndex !== newStations.length - 1
+  const direction = wasForcedAtHead ? -1 : wasForcedAtTail ? 1 : storedDirection
+
+  const before = advanceVehicleMotion(oldStations, state, 0, mode)
+  const after = advanceVehicleMotion(newStations, { ...state, direction }, 0, mode)
+  if (after.currentStationId !== before.currentStationId) return null
+  // 종점이 밀려서 방향을 되돌린 경우엔 다음 역이 바뀌는 게 당연하다(그게 목적) — 그
+  // 경우만 빼고, 다음 역이 달라졌다면 이 근방 구성 자체가 바뀐 것이라 손 못 댄다.
+  if (!wasForcedAtHead && !wasForcedAtTail && after.nextStationId !== before.nextStationId) return null
+
+  return { currentStationId: state.currentStationId, direction, segmentProgressMinutes: state.segmentProgressMinutes }
+}
+
+/**
  * 노선 중간에 새 역을 끼워 넣을 때, 마침 그 구간을 지나던 차량의 진행 상태를 새 구간
  * 기준으로 다시 계산한다. 그대로 두면 advanceVehicleMotion의 구간 길이 클램프 때문에
  * (예전 긴 구간 기준 진행 시간이 훨씬 짧아진 새 구간 길이를 넘어서) 차량이 새 역까지

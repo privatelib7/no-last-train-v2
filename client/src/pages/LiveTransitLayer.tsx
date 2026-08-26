@@ -213,9 +213,18 @@ function LiveTransitLayer({
             ? -synced.dwellRemainingMinutes
             : synced.renderSegmentProgressMinutes,
         }, line.status === 'OPERATING' ? motionProjectionMinutes : 0, motionPhysics)
-        // 노선 편집 직후처럼 서버 스냅샷의 역이 아직 현재 city topology에 없으면
-        // 투영할 수 없으므로 그 한 프레임만 권위 좌표를 그대로 사용한다.
-        located = projected.x != null && projected.y != null
+        // city(노선 목록)는 2.5초 주기로만 갱신되는데 motion(서버 권위 위치)은 그보다
+        // 훨씬 빠르게(400ms) 갱신된다 — 그래서 노선을 연장한 직후 최대 2초 남짓은 이
+        // 컴포넌트가 들고 있는 `line`이 신설역을 아직 모르는 채로 위 locateVehicle을
+        // 부른다. 그러면 locateVehicle이 종점(옛 배열의 마지막 칸)에서 "다음 역"을
+        // 자기 나름대로 다시 계산하다 서버가 이미 신설역 쪽으로 정한 방향과 반대로
+        // (되돌아가는 쪽으로) 꺾어버릴 수 있다 — 그 뒤 city가 따라잡히는 순간 화면이
+        // 서버의 진짜 위치로 튀어 "임의로 몇 칸 앞으로 이동한" 것처럼 보였다.
+        // 그래서 그 결과가 서버가 말해준 다음 역(toStationId)과 다르면(=이 프레임만
+        // topology가 안 맞는 것) locateVehicle의 재계산을 버리고 권위 좌표를 그대로 쓴다.
+        const topologyMismatch = synced.toStationId != null
+          && (projected.toStation?.id ?? null) !== synced.toStationId
+        located = projected.x != null && projected.y != null && !topologyMismatch
           ? projected
           : {
               fromStation: synced.fromStationId ? stationById.get(synced.fromStationId) ?? null : null,
@@ -234,6 +243,11 @@ function LiveTransitLayer({
       } else {
         located = locateVehicle(line, vehicle, 0, motionPhysics)
       }
+      // 차고지에 대기 중인 차량(입고/예비)은 선로 위를 달리는 게 아니라 depotX/Y에 그냥
+      // 놓인 것뿐이다 — 노선을 연장해 차고지가 옮겨지면 이 좌표가 한 프레임에 바뀌는데,
+      // 선로가 없는 좌표라 일반 스무딩을 태우면 맵을 가로질러 직선으로 미끄러져 온다.
+      // 실제로 달리는 게 아니므로 궤적을 보여줄 필요가 없다 — 바로 스냅한다.
+      const isDepotParked = vehicle.isSpare || vehicle.status === 'SPARE'
       const smoothed = resolveSmoothVehiclePosition(
         vehicle.id,
         located.x != null && located.y != null ? { x: located.x, y: located.y } : null,
@@ -242,7 +256,7 @@ function LiveTransitLayer({
         vehicleLastMoveRef.current,
         modeCruiseSpeed(line.mode, motionPhysics),
         gameMinutesPerWallSecond,
-        motionDrive?.catchingUp ?? false,
+        (motionDrive?.catchingUp ?? false) || isDepotParked,
       )
       if (smoothed) {
         return [vehicle.id, { ...located, x: smoothed.x, y: smoothed.y }] as const
